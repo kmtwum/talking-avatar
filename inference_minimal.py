@@ -94,6 +94,7 @@ if __name__ == "__main__":
     more_kwargs = {
         "setup_kwargs": {
             "sampling_timesteps": args.steps,
+            "max_size": 512,  # Reduce from default 1920
         }
     }
 
