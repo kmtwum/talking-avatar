@@ -7,7 +7,7 @@ import torch
 import pickle
 import time
 
-from stream_pipeline_fast import FastStreamSDK
+from stream_pipeline_offline import StreamSDK
 
 
 def seed_everything(seed):
@@ -25,18 +25,19 @@ def load_pkl(pkl):
         return pickle.load(f)
 
 
-def run_optimized(SDK: FastStreamSDK, audio_path: str, source_path: str, output_path: str, more_kwargs: str | dict = {}):
+def run_optimized(SDK: StreamSDK, audio_path: str, source_path: str, output_path: str, more_kwargs: str | dict = {}):
     start_time = time.time()
     
     if isinstance(more_kwargs, str):
         more_kwargs = load_pkl(more_kwargs)
     
-    # Optimize setup kwargs for speed
+    # Aggressive optimizations for speed
     setup_kwargs = more_kwargs.get("setup_kwargs", {})
     setup_kwargs.update({
-        "sampling_timesteps": 25,  # Reduce from default 50
-        "max_size": 512,  # Reduce resolution for speed
-        "crop_scale": 2.0,  # Slightly reduce crop for faster processing
+        "sampling_timesteps": 15,  # Aggressive reduction from 50
+        "max_size": 384,  # Lower resolution
+        "smo_k_s": 5,  # Reduce smoothing
+        "smo_k_d": 1,  # Minimal smoothing
     })
     
     run_kwargs = more_kwargs.get("run_kwargs", {})
@@ -91,7 +92,7 @@ if __name__ == "__main__":
     # init sdk
     data_root = args.data_root
     cfg_pkl = args.cfg_pkl
-    SDK = FastStreamSDK(cfg_pkl, data_root)
+    SDK = StreamSDK(cfg_pkl, data_root)
 
     # input args
     audio_path = args.audio_path
