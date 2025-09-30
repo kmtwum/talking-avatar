@@ -72,18 +72,19 @@ if __name__ == "__main__":
     parser.add_argument("--audio_path", type=str, help="path to input wav")
     parser.add_argument("--source_path", type=str, help="path to input image")
     parser.add_argument("--output_path", type=str, help="path to output mp4")
+    parser.add_argument("--steps", type=int, default=25, help="sampling timesteps")
     args = parser.parse_args()
 
+    # Enable optimizations
+    torch.backends.cudnn.benchmark = True
+
+    # Create optimized config
+    more_kwargs = {
+        "setup_kwargs": {
+            "sampling_timesteps": args.steps,
+        }
+    }
+
     # init sdk
-    data_root = args.data_root   # model dir
-    cfg_pkl = args.cfg_pkl     # cfg pkl
-    SDK = StreamSDK(cfg_pkl, data_root)
-
-    # input args
-    audio_path = args.audio_path    # .wav
-    source_path = args.source_path   # video|image
-    output_path = args.output_path   # .mp4
-
-    # run
-    # seed_everything(1024)
-    run(SDK, audio_path, source_path, output_path)
+    SDK = StreamSDK(args.cfg_pkl, args.data_root)
+    run(SDK, args.audio_path, args.source_path, args.output_path, more_kwargs)
