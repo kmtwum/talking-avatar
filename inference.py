@@ -3,7 +3,7 @@ import math
 import os
 import numpy as np
 import random
-#import torch
+import torch
 import pickle
 
 from stream_pipeline_offline import StreamSDK

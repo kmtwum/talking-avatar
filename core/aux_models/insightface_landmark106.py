@@ -1,6 +1,6 @@
 from __future__ import division
 import numpy as np
-#import torch
+import torch
 import cv2
 from skimage import transform as trans
 
