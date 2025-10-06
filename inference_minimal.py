@@ -85,6 +85,8 @@ if __name__ == "__main__":
     parser.add_argument("--source_path", type=str, help="path to input image")
     parser.add_argument("--output_path", type=str, help="path to output mp4")
     parser.add_argument("--steps", type=int, default=25, help="sampling timesteps")
+    parser.add_argument("--fast", action="store_true", help="Enable fast mode optimizations")
+    parser.add_argument("--size", type=int, default=512, help="video resolution (max_size)")
     args = parser.parse_args()
 
     # Enable optimizations
@@ -94,7 +96,7 @@ if __name__ == "__main__":
     more_kwargs = {
         "setup_kwargs": {
             "sampling_timesteps": args.steps,
-            "max_size": 512,  # Reduce from default 1920
+            "max_size": args.size,
         }
     }
 

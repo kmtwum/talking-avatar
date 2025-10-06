@@ -82,7 +82,9 @@ if __name__ == "__main__":
     parser.add_argument("--audio_path", type=str, help="path to input wav")
     parser.add_argument("--source_path", type=str, help="path to input image")
     parser.add_argument("--output_path", type=str, help="path to output mp4")
+    parser.add_argument("--steps", type=int, default=25, help="sampling timesteps")
     parser.add_argument("--fast", action="store_true", help="Enable fast mode optimizations")
+    parser.add_argument("--size", type=int, default=512, help="video resolution (max_size)")
     args = parser.parse_args()
 
     # Enable GPU optimizations
@@ -103,8 +105,8 @@ if __name__ == "__main__":
     if args.fast:
         more_kwargs = {
             "setup_kwargs": {
-                "sampling_timesteps": 20,
-                "max_size": 512,
+                "sampling_timesteps": args.steps,
+                "max_size": args.size,
                 "smo_k_s": 7,  # Reduce smoothing
                 "smo_k_d": 1,  # Reduce smoothing
             }
