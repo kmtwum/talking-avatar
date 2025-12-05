@@ -72,15 +72,17 @@ def run(SDK: StreamSDK, audio_path: str, source_path: str, output_path: str, mor
     
     total_time = time.time() - start_time
     audio_duration = len(audio) / 16000
-    print(f"Total: {total_time:.2f}s for {audio_duration:.1f}s audio (ratio: {total_time/audio_duration:.2f}x)")
+    print(f"Total: {total_time:.2f}s for {audio_duration:.1f}s audio (ratio: {total_time / audio_duration:.2f}x)")
     print(output_path)
 
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_root", type=str, default="./checkpoints/ditto_trt_Ampere_Plus", help="path to trt data_root")
-    parser.add_argument("--cfg_pkl", type=str, default="./checkpoints/ditto_cfg/v0.4_hubert_cfg_trt.pkl", help="path to cfg_pkl")
+    parser.add_argument("--data_root", type=str, default="./checkpoints/ditto_trt_Ampere_Plus",
+                        help="path to trt data_root")
+    parser.add_argument("--cfg_pkl", type=str, default="./checkpoints/ditto_cfg/v0.4_hubert_cfg_trt.pkl",
+                        help="path to cfg_pkl")
     parser.add_argument("--audio_path", type=str, help="path to input wav")
     parser.add_argument("--source_path", type=str, help="path to input image")
     parser.add_argument("--output_path", type=str, help="path to output mp4")
