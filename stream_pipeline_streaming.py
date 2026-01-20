@@ -32,6 +32,7 @@ class StreamingSDK(StreamSDK):
         
         self._streaming_mode = False
         self._fmp4_writer: Optional[FMP4StreamWriter] = None
+        self._fmp4_ready = threading.Event()  # Signal when fMP4 writer is ready
         self._chunk_queue: asyncio.Queue = None
         self._loop: asyncio.AbstractEventLoop = None
         
@@ -85,41 +86,59 @@ class StreamingSDK(StreamSDK):
             fragment_duration_frames=5
         )
         self._fmp4_writer.start()
+        # Signal that the fMP4 writer is ready
+        self._fmp4_ready.set()
         
+    def writer_worker(self):
+        """
+        Override base class writer_worker to use fMP4 streaming output.
+        
+        This is called by the base class setup() when creating worker threads.
+        """
+        try:
+            self._streaming_writer_worker()
+        except Exception as e:
+            self.worker_exception = e
+            self.stop_event.set()
+            
     def _streaming_writer_worker(self):
         """
         Modified writer worker that outputs to fMP4 writer instead of file.
         
-        Overrides the base writer_worker to redirect frames to the streaming writer.
+        Redirects frames to the fMP4 streaming writer instead of the file writer.
+        Waits for the fMP4 writer to be initialized before processing.
         """
-        try:
-            while not self.stop_event.is_set():
-                try:
-                    item = self.writer_queue.get(timeout=1)
-                except queue.Empty:
-                    continue
+        # Wait for fMP4 writer to be ready (blocks until generate_chunks starts)
+        while not self.stop_event.is_set():
+            if self._fmp4_ready.wait(timeout=1):
+                break
+        
+        if self.stop_event.is_set():
+            return
+            
+        while not self.stop_event.is_set():
+            try:
+                item = self.writer_queue.get(timeout=1)
+            except queue.Empty:
+                continue
 
-                if item is None:
-                    break
-                    
-                res_frame_rgb = item
+            if item is None:
+                break
                 
-                # Resize frame if needed
-                if res_frame_rgb.shape[0] != self._streaming_output_height or \
-                   res_frame_rgb.shape[1] != self._streaming_output_width:
-                    import cv2
-                    res_frame_rgb = cv2.resize(
-                        res_frame_rgb,
-                        (self._streaming_output_width, self._streaming_output_height),
-                        interpolation=cv2.INTER_LINEAR
-                    )
-                
-                # Write to fMP4 writer
-                self._fmp4_writer.write_frame(res_frame_rgb)
-                
-        except Exception as e:
-            self.worker_exception = e
-            self.stop_event.set()
+            res_frame_rgb = item
+            
+            # Resize frame if needed
+            if res_frame_rgb.shape[0] != self._streaming_output_height or \
+               res_frame_rgb.shape[1] != self._streaming_output_width:
+                import cv2
+                res_frame_rgb = cv2.resize(
+                    res_frame_rgb,
+                    (self._streaming_output_width, self._streaming_output_height),
+                    interpolation=cv2.INTER_LINEAR
+                )
+            
+            # Write to fMP4 writer
+            self._fmp4_writer.write_frame(res_frame_rgb)
             
     async def generate_chunks(self, audio_path: str) -> AsyncIterator[bytes]:
         """
