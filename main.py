@@ -276,6 +276,7 @@ def health():
 async def generate_stream(
     text: str = Form(...),
     size: str = Form("256"),
+    avatar: str = Form("sunny"),
     tts_preference: str = Form("coqui"),
     tts_voice_id: str = Form(None),
     user_id: Optional[str] = Form(None),
@@ -294,23 +295,7 @@ async def generate_stream(
     """
     
     # Resolve image path
-    if user_id:
-        img_path = f"/app/user_img/{user_id}.jpg"
-        if not os.path.exists(img_path):
-            print(f"{img_path} not found. Downloading image...")
-            try:
-                gcp_base = get_secret_key("GCP_BASE_FILE")
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(f"{gcp_base}/{source_img}")
-                    response.raise_for_status()
-                    with open(img_path, "wb") as f:
-                        f.write(response.content)
-                print("Image downloaded successfully!")
-            except Exception as e:
-                print(f"Error downloading image: {e}")
-                img_path = "/app/img/avatar.jpg"
-    else:
-        img_path = "/app/img/avatar.jpg"
+    img_path = f"/app/user_img/{avatar}.jpg"
     
     # Generate TTS first (video needs audio duration)
     print("[STREAM] Generating TTS...")
