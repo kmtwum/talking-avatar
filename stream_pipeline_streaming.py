@@ -139,6 +139,13 @@ class StreamingSDK(StreamSDK):
             
             # Write to fMP4 writer
             self._fmp4_writer.write_frame(res_frame_rgb)
+        
+        # All frames written - close fMP4 writer stdin to signal EOF to FFmpeg
+        if self._fmp4_writer and self._fmp4_writer._process:
+            try:
+                self._fmp4_writer._process.stdin.close()
+            except:
+                pass
             
     async def generate_chunks(self, audio_path: str) -> AsyncIterator[bytes]:
         """
@@ -201,17 +208,18 @@ class StreamingSDK(StreamSDK):
         """
         Run the video generation pipeline in background thread.
         
-        This feeds audio features to the audio2motion queue and
-        waits for all workers to complete.
+        Feeds audio features to the audio2motion queue.
+        The worker threads were already started by setup().
         """
         try:
             # Feed audio features to the pipeline
             self.audio2motion_queue.put(aud_feat)
             self.audio2motion_queue.put(None)  # Signal end
             
-            # Wait for all workers to complete
-            for thread in self.thread_list:
-                thread.join()
+            # Don't join thread_list here - that would deadlock!
+            # The threads are already running from setup() and will
+            # process the data. The main generate_chunks() async loop
+            # will handle waiting for segments.
                 
         except Exception as e:
             self.worker_exception = e
