@@ -1,8 +1,10 @@
 """
 Streaming Pipeline - SDK variant that yields fMP4 chunks instead of writing to file.
 
-This extends the base StreamSDK to support real-time streaming output
+This extends the online StreamSDK to support real-time streaming output
 for MediaSource Extensions playback in browsers.
+
+Uses online mode for incremental audio processing and lower latency.
 """
 
 import threading
@@ -14,7 +16,7 @@ import librosa
 from typing import AsyncIterator, Optional
 from tqdm import tqdm
 
-from stream_pipeline_offline import StreamSDK
+from stream_pipeline_online import StreamSDK
 from core.atomic_components.fmp4_writer import FMP4StreamWriter
 from core.atomic_components.condition_handler import _mirror_index
 
@@ -58,7 +60,8 @@ class StreamingSDK(StreamSDK):
         streaming_defaults = {
             "sampling_timesteps": 15,  # Faster inference
             "max_size": max(width, height),
-            "smo_k_s": 5,
+            "online_mode": True,  # Enable online mode for incremental processing
+            "smo_k_s": 3,
             "smo_k_d": 1,
         }
         streaming_defaults.update(kwargs)
@@ -151,7 +154,8 @@ class StreamingSDK(StreamSDK):
         """
         Async generator that yields fMP4 segments as frames are generated.
         
-        This is the main entry point for streaming video generation.
+        Uses online mode to process audio in chunks for lower latency.
+        Segments are yielded progressively as they become available.
         
         Args:
             audio_path: Path to the audio file
@@ -176,19 +180,23 @@ class StreamingSDK(StreamSDK):
         # Setup frame count
         self.setup_Nd(N_d=num_frames)
         
-        # Process audio to features
-        aud_feat = self.wav2feat.wav2feat(audio)
+        # Chunk configuration for streaming (matches inference_streaming.py)
+        chunk_size = (2, 3, 1)  # Smaller chunks = lower latency
         
-        # Start frame generation in background thread
+        # Pad audio for chunking
+        audio = np.concatenate([np.zeros((chunk_size[0] * 640,), dtype=np.float32), audio], 0)
+        split_len = int(sum(chunk_size) * 0.04 * 16000) + 80
+        
+        # Start chunked audio feeding in background thread
         generation_thread = threading.Thread(
-            target=self._run_generation_background,
-            args=(aud_feat,)
+            target=self._run_chunked_generation,
+            args=(audio, chunk_size, split_len)
         )
         generation_thread.start()
         
         # Yield init segment first
         try:
-            init_segment = self._fmp4_writer.get_init_segment(timeout=10.0)
+            init_segment = self._fmp4_writer.get_init_segment(timeout=15.0)
             yield init_segment
         except TimeoutError:
             raise RuntimeError("Failed to get initialization segment")
@@ -204,22 +212,27 @@ class StreamingSDK(StreamSDK):
         self._fmp4_writer.close()
         self._cleanup_temp()
         
-    def _run_generation_background(self, aud_feat):
+    def _run_chunked_generation(self, audio: np.ndarray, chunk_size: tuple, split_len: int):
         """
-        Run the video generation pipeline in background thread.
+        Feed audio in chunks for progressive video generation.
         
-        Feeds audio features to the audio2motion queue.
-        The worker threads were already started by setup().
+        Uses run_chunk() to feed audio incrementally, enabling the
+        online pipeline to output frames as they're generated.
         """
         try:
-            # Feed audio features to the pipeline
-            self.audio2motion_queue.put(aud_feat)
-            self.audio2motion_queue.put(None)  # Signal end
+            # Feed audio chunks to the pipeline
+            for i in range(0, len(audio), chunk_size[1] * 640):
+                if self.stop_event.is_set():
+                    break
+                    
+                audio_chunk = audio[i:i + split_len]
+                if len(audio_chunk) < split_len:
+                    audio_chunk = np.pad(audio_chunk, (0, split_len - len(audio_chunk)), mode="constant")
+                
+                self.run_chunk(audio_chunk, chunk_size)
             
-            # Don't join thread_list here - that would deadlock!
-            # The threads are already running from setup() and will
-            # process the data. The main generate_chunks() async loop
-            # will handle waiting for segments.
+            # Signal end of audio
+            self.audio2motion_queue.put(None)
                 
         except Exception as e:
             self.worker_exception = e
