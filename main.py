@@ -43,65 +43,6 @@ async def shutdown():
         print(f"[SHUTDOWN] SDK cleanup error: {e}")
 
 
-class VideoCallManager:
-    def __init__(self):
-        self.active_calls = {}
-
-    async def start_generation(self, call_id: str, audio_path: str, image_path: str):
-        """Start video generation and yield chunks as they're ready"""
-
-        output_path = f"/tmp/call_{call_id}.mp4"
-
-        # Use streaming inference
-        process = subprocess.Popen([
-            "python", "/app/inference_streaming.py",
-            "--audio_path", audio_path,
-            "--source_path", image_path,
-            "--output_path", output_path
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-        # Wait for completion (in real streaming, you'd yield chunks)
-        await asyncio.create_subprocess_exec(*process.args)
-
-        # Stream the completed video
-        if os.path.exists(output_path):
-            with open(output_path, "rb") as f:
-                while chunk := f.read(8192):
-                    yield chunk
-
-
-manager = VideoCallManager()
-
-
-@app.websocket("/video_call/{call_id}")
-async def video_call_websocket(websocket: WebSocket, call_id: str):
-    """WebSocket for real-time video call simulation"""
-    await websocket.accept()
-
-    try:
-        while True:
-            # Receive message from client
-            data = await websocket.receive_json()
-
-            if data["type"] == "generate_response":
-                text = data["text"]
-
-                # 3. Wait for TTS
-                audio_path = generate_tts(text)
-
-                # 4. Start video generation
-                await websocket.send_json({"status": "generating_video"})
-
-                # 5. Stream video chunks as ready
-                async for chunk in manager.start_generation(call_id, audio_path, "/app/avatar.jpg"):
-                    await websocket.send_bytes(chunk)
-
-                await websocket.send_json({"status": "complete"})
-
-    except Exception as e:
-        await websocket.send_json({"error": str(e)})
-
-
 def generate_tts(text: str, tts_preference: str = "coqui", tts_voice_id: str = None, user_id: str = None,
                  voice_source: str = None) -> str:
     """Generate TTS audio"""
@@ -316,15 +257,9 @@ async def generate_stream(
             import os
             
             # Get SDK configuration
-            cfg_pkl = os.getenv(
-                "SDK_ONLINE_CFG_PKL",
-                "/app/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_online.pkl"
-            )
-            data_root = os.getenv(
-                "SDK_DATA_ROOT",
-                "/app/checkpoints/ditto_trt_Ampere_Plus"
-            )
-            
+            cfg_pkl = "/app/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_online.pkl"
+            data_root = "/app/checkpoints/ditto_trt_Ampere_Plus"
+
             # Create streaming SDK instance
             streaming_sdk = StreamingSDK(cfg_pkl, data_root)
             streaming_sdk.setup_streaming(
