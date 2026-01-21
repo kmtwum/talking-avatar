@@ -31,7 +31,10 @@ class StreamingSDK(StreamSDK):
     
     def __init__(self, cfg_pkl, data_root, **kwargs):
         super().__init__(cfg_pkl, data_root, **kwargs)
-        
+
+        self._streaming_output_width = None
+        self._streaming_output_height = None
+        self._temp_dir = None
         self._streaming_mode = False
         self._fmp4_writer: Optional[FMP4StreamWriter] = None
         self._fmp4_ready = threading.Event()  # Signal when fMP4 writer is ready
@@ -58,7 +61,7 @@ class StreamingSDK(StreamSDK):
         
         # Merge defaults with streaming-optimized settings
         streaming_defaults = {
-            "sampling_timesteps": 15,  # Faster inference
+            "sampling_timesteps": 10,  # Faster inference
             "max_size": max(width, height),
             "online_mode": True,  # Enable online mode for incremental processing
             "smo_k_s": 3,
@@ -187,7 +190,7 @@ class StreamingSDK(StreamSDK):
         audio = np.concatenate([np.zeros((chunk_size[0] * 640,), dtype=np.float32), audio], 0)
         split_len = int(sum(chunk_size) * 0.04 * 16000) + 80
         
-        # Start chunked audio feeding in background thread
+        # Start chunked audio feeding in a background thread
         generation_thread = threading.Thread(
             target=self._run_chunked_generation,
             args=(audio, chunk_size, split_len)
