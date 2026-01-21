@@ -24,8 +24,8 @@ async def startup():
     """Pre-load SDK on startup to avoid cold start latency."""
     try:
         from sdk_manager import SDKManager
-        # Configure paths (these can be overridden by environment variables)
-        cfg_pkl = os.getenv("SDK_CFG_PKL", "/app/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt.pkl")
+        # Configure paths for online mode
+        cfg_pkl = os.getenv("SDK_CFG_PKL", "/app/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_online.pkl")
         data_root = os.getenv("SDK_DATA_ROOT", "/app/checkpoints/ditto_trt_Ampere_Plus")
         SDKManager.configure(cfg_pkl=cfg_pkl, data_root=data_root)
         SDKManager.warmup()
@@ -232,48 +232,60 @@ async def generate_stream(
     Client should use MSE to append chunks to a SourceBuffer.
     MIME type: video/mp4; codecs="avc1.42E01E, mp4a.40.2"
     """
+    import time
+    start_time = time.time()
+    print(f"[ENDPOINT] Stream request started at {start_time:.3f}")
     
     # Resolve image path
     img_path = f"/app/user_img/{avatar}.jpg"
+    print(f"[ENDPOINT] Using image: {img_path} at {time.time() - start_time:.3f}s")
     
     # Use provided audio or generate TTS
     if audio:
         audio_path = f"/tmp/stream_uploaded_{hash(text)}.wav"
         with open(audio_path, "wb") as f:
             f.write(await audio.read())
-        print(f"[STREAM] Using uploaded audio: {audio_path}")
+        print(f"[ENDPOINT] Using uploaded audio: {audio_path} at {time.time() - start_time:.3f}s")
     else:
-        print("[STREAM] Generating TTS...")
+        print(f"[ENDPOINT] Generating TTS at {time.time() - start_time:.3f}s")
         audio_path = await generate_tts_async(
             text, tts_preference, tts_voice_id,
             user_id=user_id, voice_source=source_aud
         )
-        print(f"[STREAM] TTS complete: {audio_path}")
+        print(f"[ENDPOINT] TTS complete: {audio_path} at {time.time() - start_time:.3f}s")
     
     async def stream_chunks():
         """Async generator yielding fMP4 segments."""
         try:
+            print(f"[ENDPOINT] Starting stream_chunks at {time.time() - start_time:.3f}s")
+            
             from stream_pipeline_streaming import StreamingSDK
             import os
+            
+            print(f"[ENDPOINT] Imported StreamingSDK at {time.time() - start_time:.3f}s")
             
             # Get SDK configuration
             cfg_pkl = "/app/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_online.pkl"
             data_root = "/app/checkpoints/ditto_trt_Ampere_Plus"
 
             # Create streaming SDK instance
+            print(f"[ENDPOINT] Creating StreamingSDK at {time.time() - start_time:.3f}s")
             streaming_sdk = StreamingSDK(cfg_pkl, data_root)
+            
+            print(f"[ENDPOINT] Setting up streaming at {time.time() - start_time:.3f}s")
             streaming_sdk.setup_streaming(
                 source_path=img_path,
                 width=int(size),
                 height=int(size)
             )
             
+            print(f"[ENDPOINT] Starting chunk generation at {time.time() - start_time:.3f}s")
             # Yield chunks as they're generated
             async for chunk in streaming_sdk.generate_chunks(audio_path):
                 yield chunk
                 
         except Exception as e:
-            print(f"[STREAM] Error during streaming: {e}")
+            print(f"[ENDPOINT] Error during streaming: {e}")
             import traceback
             traceback.print_exc()
             raise
@@ -284,6 +296,7 @@ async def generate_stream(
             except:
                 pass
     
+    print(f"[ENDPOINT] Returning StreamingResponse at {time.time() - start_time:.3f}s")
     return StreamingResponse(
         stream_chunks(),
         media_type='video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
