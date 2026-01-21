@@ -257,6 +257,7 @@ async def generate_stream(
             user_id=user_id, voice_source=source_aud
         )
         print(f"[ENDPOINT] TTS complete: {audio_path} at {time.time() - start_time:.3f}s")
+        print(f"[ENDPOINT] Text: '{text}' -> Audio: {audio_path}")
     
     async def stream_chunks():
         """Async generator yielding fMP4 segments."""
