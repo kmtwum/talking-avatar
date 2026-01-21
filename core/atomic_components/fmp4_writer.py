@@ -143,7 +143,8 @@ class FMP4StreamWriter:
         width: int,
         height: int,
         fps: int = 25,
-        fragment_duration_frames: int = 5
+        fragment_duration_frames: int = 5,
+        audio_path: Optional[str] = None
     ):
         """
         Initialize the fMP4 writer.
@@ -153,11 +154,13 @@ class FMP4StreamWriter:
             height: Video height in pixels  
             fps: Frames per second (default 25)
             fragment_duration_frames: Frames per fragment (default 5)
+            audio_path: Optional path to audio file for muxing
         """
         self.width = width
         self.height = height
         self.fps = fps
         self.fragment_duration_frames = fragment_duration_frames
+        self.audio_path = audio_path
         
         self._process: Optional[subprocess.Popen] = None
         self._output_queue: queue.Queue = queue.Queue()
@@ -180,8 +183,15 @@ class FMP4StreamWriter:
             '-pix_fmt', 'rgb24',
             '-s', f'{self.width}x{self.height}',
             '-r', str(self.fps),
-            '-i', 'pipe:0',
-            # Output format and codecs
+            '-i', 'pipe:0'
+        ]
+        
+        # Add audio input if provided
+        if self.audio_path:
+            cmd.extend(['-i', self.audio_path])
+            
+        # Output format and codecs
+        cmd.extend([
             '-f', 'mp4',
             '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
             '-c:v', 'libx264',
@@ -189,9 +199,14 @@ class FMP4StreamWriter:
             '-tune', 'zerolatency',
             '-g', str(self.fragment_duration_frames),  # GOP size = fragment size
             '-keyint_min', str(self.fragment_duration_frames),
-            '-pix_fmt', 'yuv420p',
-            'pipe:1'
-        ]
+            '-pix_fmt', 'yuv420p'
+        ])
+        
+        # Add audio codec if audio is present
+        if self.audio_path:
+            cmd.extend(['-c:a', 'aac', '-b:a', '128k'])
+            
+        cmd.append('pipe:1')
         
         self._process = subprocess.Popen(
             cmd,

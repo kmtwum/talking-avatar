@@ -83,13 +83,14 @@ class StreamingSDK(StreamSDK):
         # Call parent setup
         super().setup(source_path, dummy_output, **streaming_defaults)
         
-    def _setup_streaming_writer(self):
+    def _setup_streaming_writer(self, audio_path: str = None):
         """Initialize the fMP4 writer for streaming output."""
         self._fmp4_writer = FMP4StreamWriter(
             width=self._streaming_output_width,
             height=self._streaming_output_height,
             fps=25,
-            fragment_duration_frames=5
+            fragment_duration_frames=5,
+            audio_path=audio_path
         )
         self._fmp4_writer.start()
         # Signal that the fMP4 writer is ready
@@ -173,8 +174,8 @@ class StreamingSDK(StreamSDK):
         self._loop = asyncio.get_event_loop()
         self._chunk_queue = asyncio.Queue()
         
-        # Setup the fMP4 writer
-        self._setup_streaming_writer()
+        # Setup the fMP4 writer with audio
+        self._setup_streaming_writer(audio_path)
         
         # Load audio and compute frame count
         audio, sr = librosa.core.load(audio_path, sr=16000)
