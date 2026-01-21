@@ -222,9 +222,7 @@ class StreamingSDK(StreamSDK):
             raise RuntimeError("Failed to get initialization segment")
         
         # Yield media segments as they become available
-        segment_count = 0
         for segment in self._fmp4_writer.iter_segments(timeout=2.0):
-            segment_count += 1
             yield segment
             
         # Wait for generation to complete
