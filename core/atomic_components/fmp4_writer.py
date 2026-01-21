@@ -175,6 +175,8 @@ class FMP4StreamWriter:
         if self._started:
             raise RuntimeError("Writer already started")
         
+        print(f"[FMP4] Starting FFmpeg process")
+        
         # FFmpeg command for fMP4 with browser-compatible codecs
         cmd = [
             'ffmpeg',
@@ -189,6 +191,7 @@ class FMP4StreamWriter:
         # Add audio input if provided
         if self.audio_path:
             cmd.extend(['-i', self.audio_path])
+            print(f"[FMP4] Adding audio input: {self.audio_path}")
             
         # Output format and codecs
         cmd.extend([
@@ -208,6 +211,8 @@ class FMP4StreamWriter:
             
         cmd.append('pipe:1')
         
+        print(f"[FMP4] FFmpeg command: {' '.join(cmd)}")
+        
         self._process = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -216,11 +221,14 @@ class FMP4StreamWriter:
             bufsize=0
         )
         
+        print(f"[FMP4] FFmpeg process started (PID: {self._process.pid})")
+        
         # Start reader thread to consume stdout
         self._reader_thread = threading.Thread(target=self._read_output, daemon=True)
         self._reader_thread.start()
         
         self._started = True
+        print(f"[FMP4] Writer started successfully")
         
     def _read_output(self):
         """Background thread that reads FFmpeg output and queues chunks."""
@@ -299,8 +307,12 @@ class FMP4StreamWriter:
             frame_rgb = frame_rgb.astype(np.uint8)
         
         # Write raw frame data
-        self._process.stdin.write(frame_rgb.tobytes())
-        self._process.stdin.flush()
+        try:
+            self._process.stdin.write(frame_rgb.tobytes())
+            self._process.stdin.flush()
+        except BrokenPipeError:
+            print(f"[FMP4] Broken pipe - FFmpeg process may have died")
+            raise
         
     def get_init_segment(self, timeout: float = 5.0) -> bytes:
         """

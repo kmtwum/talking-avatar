@@ -85,6 +85,8 @@ class StreamingSDK(StreamSDK):
         
     def _setup_streaming_writer(self, audio_path: str = None):
         """Initialize the fMP4 writer for streaming output."""
+        print(f"[STREAM] Creating FMP4StreamWriter with audio: {audio_path is not None}")
+        
         self._fmp4_writer = FMP4StreamWriter(
             width=self._streaming_output_width,
             height=self._streaming_output_height,
@@ -92,9 +94,13 @@ class StreamingSDK(StreamSDK):
             fragment_duration_frames=5,
             audio_path=audio_path
         )
+        
+        print(f"[STREAM] Starting FMP4StreamWriter")
         self._fmp4_writer.start()
+        
         # Signal that the fMP4 writer is ready
         self._fmp4_ready.set()
+        print(f"[STREAM] FMP4StreamWriter ready")
         
     def writer_worker(self):
         """
@@ -167,6 +173,10 @@ class StreamingSDK(StreamSDK):
         Yields:
             bytes: fMP4 segments (init segment first, then media segments)
         """
+        import time
+        start_time = time.time()
+        print(f"[STREAM] Starting generation at {start_time:.3f}")
+        
         if not self._streaming_mode:
             raise RuntimeError("Must call setup_streaming() before generate_chunks()")
         
@@ -175,11 +185,14 @@ class StreamingSDK(StreamSDK):
         self._chunk_queue = asyncio.Queue()
         
         # Setup the fMP4 writer with audio
+        print(f"[STREAM] Setting up fMP4 writer at {time.time() - start_time:.3f}s")
         self._setup_streaming_writer(audio_path)
         
         # Load audio and compute frame count
+        print(f"[STREAM] Loading audio at {time.time() - start_time:.3f}s")
         audio, sr = librosa.core.load(audio_path, sr=16000)
         num_frames = math.ceil(len(audio) / 16000 * 25)
+        print(f"[STREAM] Audio loaded: {len(audio)} samples, {num_frames} frames at {time.time() - start_time:.3f}s")
         
         # Setup frame count
         self.setup_Nd(N_d=num_frames)
@@ -192,39 +205,50 @@ class StreamingSDK(StreamSDK):
         split_len = int(sum(chunk_size) * 0.04 * 16000) + 80
         
         # Start chunked audio feeding in a background thread
+        print(f"[STREAM] Starting generation thread at {time.time() - start_time:.3f}s")
         generation_thread = threading.Thread(
             target=self._run_chunked_generation,
-            args=(audio, chunk_size, split_len)
+            args=(audio, chunk_size, split_len, start_time)
         )
         generation_thread.start()
         
         # Yield init segment first
+        print(f"[STREAM] Waiting for init segment at {time.time() - start_time:.3f}s")
         try:
             init_segment = self._fmp4_writer.get_init_segment(timeout=15.0)
+            print(f"[STREAM] Got init segment ({len(init_segment)} bytes) at {time.time() - start_time:.3f}s")
             yield init_segment
         except TimeoutError:
             raise RuntimeError("Failed to get initialization segment")
         
         # Yield media segments as they become available
+        segment_count = 0
         for segment in self._fmp4_writer.iter_segments(timeout=2.0):
+            segment_count += 1
+            print(f"[STREAM] Yielding segment {segment_count} ({len(segment)} bytes) at {time.time() - start_time:.3f}s")
             yield segment
             
         # Wait for generation to complete
         generation_thread.join()
+        print(f"[STREAM] Generation complete at {time.time() - start_time:.3f}s")
         
         # Cleanup
         self._fmp4_writer.close()
         self._cleanup_temp()
         
-    def _run_chunked_generation(self, audio: np.ndarray, chunk_size: tuple, split_len: int):
+    def _run_chunked_generation(self, audio: np.ndarray, chunk_size: tuple, split_len: int, start_time: float):
         """
         Feed audio in chunks for progressive video generation.
         
         Uses run_chunk() to feed audio incrementally, enabling the
         online pipeline to output frames as they're generated.
         """
+        import time
         try:
+            print(f"[STREAM] Starting chunked generation at {time.time() - start_time:.3f}s")
+            
             # Feed audio chunks to the pipeline
+            chunk_count = 0
             for i in range(0, len(audio), chunk_size[1] * 640):
                 if self.stop_event.is_set():
                     break
@@ -233,12 +257,17 @@ class StreamingSDK(StreamSDK):
                 if len(audio_chunk) < split_len:
                     audio_chunk = np.pad(audio_chunk, (0, split_len - len(audio_chunk)), mode="constant")
                 
+                chunk_count += 1
+                print(f"[STREAM] Processing audio chunk {chunk_count} at {time.time() - start_time:.3f}s")
                 self.run_chunk(audio_chunk, chunk_size)
+            
+            print(f"[STREAM] Finished processing {chunk_count} audio chunks at {time.time() - start_time:.3f}s")
             
             # Signal end of audio
             self.audio2motion_queue.put(None)
                 
         except Exception as e:
+            print(f"[STREAM] Error in chunked generation: {e}")
             self.worker_exception = e
             self.stop_event.set()
             
