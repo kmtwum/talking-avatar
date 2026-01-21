@@ -95,12 +95,12 @@ class StreamingSDK(StreamSDK):
             audio_path=audio_path
         )
         
-        print(f"[STREAM] Starting FMP4StreamWriter")
+        print("[STREAM] Starting FMP4StreamWriter")
         self._fmp4_writer.start()
         
         # Signal that the fMP4 writer is ready
         self._fmp4_ready.set()
-        print(f"[STREAM] FMP4StreamWriter ready")
+        print("[STREAM] FMP4StreamWriter ready")
         
     def writer_worker(self):
         """
@@ -225,7 +225,6 @@ class StreamingSDK(StreamSDK):
         segment_count = 0
         for segment in self._fmp4_writer.iter_segments(timeout=2.0):
             segment_count += 1
-            print(f"[STREAM] Yielding segment {segment_count} ({len(segment)} bytes) at {time.time() - start_time:.3f}s")
             yield segment
             
         # Wait for generation to complete

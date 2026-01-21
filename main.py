@@ -57,7 +57,8 @@ def generate_tts(text: str, tts_preference: str = "coqui", tts_voice_id: str = N
             "model": "tts_models/multilingual/multi-dataset/xtts_v2"
         })
         tts_response.raise_for_status()
-        audio_path = f"/tmp/tts_{hash(text)}.wav"
+        request_id = str(uuid.uuid4())[:8]
+        audio_path = f"/tmp/tts_{request_id}.wav"
         with open(audio_path, "wb") as f:
             f.write(tts_response.content)
         return audio_path
@@ -116,8 +117,9 @@ async def generate_tts_async(
                 "model": "tts_models/multilingual/multi-dataset/xtts_v2"
             })
             response.raise_for_status()
-            
-            audio_path = f"/tmp/tts_{hash(text)}.wav"
+
+            request_id = str(uuid.uuid4())[:8]
+            audio_path = f"/tmp/tts_{request_id}.wav"
             with open(audio_path, "wb") as f:
                 f.write(response.content)
             return audio_path
@@ -239,10 +241,12 @@ async def generate_stream(
     # Resolve image path
     img_path = f"/app/user_img/{avatar}.jpg"
     print(f"[ENDPOINT] Using image: {img_path} at {time.time() - start_time:.3f}s")
+
+    request_id = str(uuid.uuid4())[:8]
+    audio_path = f"/app/aud/{user_id}_{request_id}_audio.wav"
     
     # Use provided audio or generate TTS
     if audio:
-        audio_path = f"/tmp/stream_uploaded_{hash(text)}.wav"
         with open(audio_path, "wb") as f:
             f.write(await audio.read())
         print(f"[ENDPOINT] Using uploaded audio: {audio_path} at {time.time() - start_time:.3f}s")
