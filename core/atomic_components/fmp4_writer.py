@@ -196,18 +196,19 @@ class FMP4StreamWriter:
         # Output format and codecs
         cmd.extend([
             '-f', 'mp4',
-            '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+            '-movflags', 'frag_keyframe+empty_moov+default_base_moof+frag_discont',
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
             '-tune', 'zerolatency',
             '-g', str(self.fragment_duration_frames),  # GOP size = fragment size
             '-keyint_min', str(self.fragment_duration_frames),
-            '-pix_fmt', 'yuv420p'
+            '-pix_fmt', 'yuv420p',
+            '-avoid_negative_ts', 'make_zero'  # Ensure proper timestamps
         ])
         
         # Add audio codec if audio is present
         if self.audio_path:
-            cmd.extend(['-c:a', 'aac', '-b:a', '128k'])
+            cmd.extend(['-c:a', 'aac', '-b:a', '128k', '-ar', '44100'])
             
         cmd.append('pipe:1')
         
@@ -256,7 +257,19 @@ class FMP4StreamWriter:
                 if len(buffer) - offset < size:
                     break  # Incomplete box
                 
+                # Validate box size
+                if size < 8 or size > len(buffer) - offset:
+                    print(f"[FMP4] Invalid box size: {size}, skipping")
+                    offset += 8  # Skip invalid box
+                    continue
+                
                 box_data = buffer[offset:offset + size]
+                
+                # Validate box data
+                if len(box_data) != size:
+                    print(f"[FMP4] Box data size mismatch: expected {size}, got {len(box_data)}")
+                    offset += size
+                    continue
                 
                 if box_type == BOX_FTYP:
                     if self._init_segment is None:
@@ -375,15 +388,23 @@ class FMP4StreamWriter:
                 # Skip init segment (already handled)
                 continue
             
+            # Validate segment data
+            if len(data) < 8:
+                print(f"[FMP4] Invalid segment data: too short ({len(data)} bytes)")
+                continue
+            
             # Determine box type
-            if len(data) >= 8:
-                box_type = data[4:8]
-                if box_type == BOX_MOOF:
-                    moof_data = data
-                elif box_type == BOX_MDAT and moof_data is not None:
-                    # Complete segment
-                    yield moof_data + data
-                    moof_data = None
+            box_type = data[4:8]
+            if box_type == BOX_MOOF:
+                moof_data = data
+            elif box_type == BOX_MDAT and moof_data is not None:
+                # Complete segment - validate before yielding
+                complete_segment = moof_data + data
+                if len(complete_segment) > 16:  # Minimum viable segment size
+                    yield complete_segment
+                else:
+                    print(f"[FMP4] Segment too small: {len(complete_segment)} bytes")
+                moof_data = None
                     
     def close(self):
         """Close the writer and FFmpeg process."""
