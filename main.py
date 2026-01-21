@@ -1,3 +1,4 @@
+import uuid
 from typing import Optional
 
 from fastapi import FastAPI, WebSocket, UploadFile, File, Form
@@ -205,33 +206,25 @@ async def quick_generate(
         tts_preference: str = Form("coqui"),
         tts_voice_id: str = Form(None),
         user_id: Optional[str] = Form(None),
+        avatar: Optional[str] = Form("sunny"),
         source_img: str = Form(None),
-        source_aud: str = Form(None)
+        source_aud: str = Form(None),
+        audio: UploadFile = File(None)
 ):
     """Optimized endpoint for fast generation"""
 
-    # Save image
-    if user_id:
-        img_path = f"/app/user_img/{user_id}.jpg"
-        if not os.path.exists(img_path):
-            # download image from url
-            print(f"{img_path} not found. Downloading image...")
-            try:
-                gcp_base = get_secret_key("GCP_BASE_FILE")
-                response = requests.get(f"{gcp_base}/{source_img}")
-                response.raise_for_status()
-                print("Image downloaded successfully!")
-                with open(img_path, "wb") as f:
-                    f.write(response.content)
-            except Exception as e:
-                print(f"Error downloading image: {e}")
-                img_path = "/app/img/avatar.jpg"
-    else:
-        img_path = "/app/img/avatar.jpg"
+    img_path = f"/app/user_img/{avatar}.jpg"
+    request_id = str(uuid.uuid4())[:8]
 
-    # Generate TTS
-    print("Generating TTS...")
-    audio_path = generate_tts(text, tts_preference, tts_voice_id, user_id=user_id, voice_source=source_aud)
+    # Use provided audio or generate TTS
+    if audio:
+        audio_path = f"/app/aud/{user_id}_{request_id}_audio.wav"
+        with open(audio_path, "wb") as f:
+            f.write(await audio.read())
+        print(f"Using uploaded audio: {audio_path}")
+    else:
+        print("Generating TTS...")
+        audio_path = generate_tts(text, tts_preference, tts_voice_id, user_id=user_id, voice_source=source_aud)
 
     # Generate video with streaming optimizations
     output_path = f"/tmp/quick_{hash(text)}.mp4"
@@ -246,6 +239,10 @@ async def quick_generate(
         "--fast",
     )
     await process.wait()
+
+    # Clean up temp audio
+    if os.path.exists(audio_path):
+        os.unlink(audio_path)
 
     # Stream response
     def video_stream():
@@ -281,7 +278,8 @@ async def generate_stream(
     tts_voice_id: str = Form(None),
     user_id: Optional[str] = Form(None),
     source_img: str = Form(None),
-    source_aud: str = Form(None)
+    source_aud: str = Form(None),
+    audio: UploadFile = File(None)
 ):
     """
     Stream fMP4 chunks for real-time playback via MediaSource Extensions.
@@ -297,13 +295,19 @@ async def generate_stream(
     # Resolve image path
     img_path = f"/app/user_img/{avatar}.jpg"
     
-    # Generate TTS first (video needs audio duration)
-    print("[STREAM] Generating TTS...")
-    audio_path = await generate_tts_async(
-        text, tts_preference, tts_voice_id,
-        user_id=user_id, voice_source=source_aud
-    )
-    print(f"[STREAM] TTS complete: {audio_path}")
+    # Use provided audio or generate TTS
+    if audio:
+        audio_path = f"/tmp/stream_uploaded_{hash(text)}.wav"
+        with open(audio_path, "wb") as f:
+            f.write(await audio.read())
+        print(f"[STREAM] Using uploaded audio: {audio_path}")
+    else:
+        print("[STREAM] Generating TTS...")
+        audio_path = await generate_tts_async(
+            text, tts_preference, tts_voice_id,
+            user_id=user_id, voice_source=source_aud
+        )
+        print(f"[STREAM] TTS complete: {audio_path}")
     
     async def stream_chunks():
         """Async generator yielding fMP4 segments."""
