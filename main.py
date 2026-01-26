@@ -10,6 +10,8 @@ import httpx
 import subprocess
 import tempfile
 import os
+from PIL import Image
+from io import BytesIO
 
 app = FastAPI()
 
@@ -200,6 +202,11 @@ async def quick_generate(
 async def upload_photo(user_id: str = Form(...), image: UploadFile = File(...)):
     os.makedirs("/app/user_img", exist_ok=True)
     img_path = f"/app/user_img/{user_id}.jpg"
+
+    content = await image.read()
+    img = Image.open(BytesIO(content))
+    img = img.resize((512, 512))
+    img.save(img_path)
 
     with open(img_path, "wb") as f:
         f.write(await image.read())
