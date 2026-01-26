@@ -203,13 +203,12 @@ async def upload_photo(user_id: str = Form(...), image: UploadFile = File(...)):
     os.makedirs("/app/user_img", exist_ok=True)
     img_path = f"/app/user_img/{user_id}.jpg"
 
+    # Read upload once, resize to 512x512, and save as JPEG
     content = await image.read()
     img = Image.open(BytesIO(content))
-    img = img.resize((512, 512))
-    img.save(img_path)
-
-    with open(img_path, "wb") as f:
-        f.write(await image.read())
+    img = img.convert("RGB")
+    img = img.resize((512, 512), resample=Image.Resampling.LANCZOS)
+    img.save(img_path, format="JPEG", quality=90, optimize=True)
 
     return {"message": "Photo uploaded successfully", "user_id": user_id}
 
