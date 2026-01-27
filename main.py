@@ -145,7 +145,7 @@ def get_secret_key(secret):
 
 @app.post("/generate")
 async def quick_generate(
-        text: str = Form(...),
+        text: Optional[str] = Form(...),
         inference: str = Form("inference_minimal"),
         size: str = Form("256"),
         tts_preference: str = Form("coqui"),
@@ -168,11 +168,13 @@ async def quick_generate(
             f.write(await audio.read())
         print(f"Using uploaded audio: {audio_path}")
     else:
+        if not text:
+            return JSONResponse({"error": "No text provided"}, status_code=400)
         print("Generating TTS...")
         audio_path = generate_tts(text, tts_preference, tts_voice_id, user_id=user_id, voice_source=source_aud)
 
     # Generate video with streaming optimizations
-    output_path = f"/tmp/quick_{hash(text)}.mp4"
+    output_path = f"/tmp/quick_{hash(request_id)}.mp4"
 
     process = await asyncio.create_subprocess_exec(
         "python", f"/app/{inference}.py",
