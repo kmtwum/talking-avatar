@@ -15,6 +15,17 @@ from io import BytesIO
 
 app = FastAPI()
 
+# Add CORS middleware for WebSocket and HTTP requests
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -220,6 +231,19 @@ def health():
     return {"status": "ready"}
 
 
+# Simple WebSocket test endpoint
+@app.websocket("/ws/test")
+async def websocket_test(websocket: WebSocket):
+    """Simple test endpoint to verify WebSocket connectivity."""
+    # Log connection attempt details
+    print(f"[WS Test] Connection attempt from: {websocket.client}")
+    print(f"[WS Test] Headers: {dict(websocket.headers)}")
+    
+    await websocket.accept()
+    await websocket.send_json({"status": "connected", "message": "WebSocket test successful"})
+    await websocket.close()
+
+
 @app.websocket("/ws/generate")
 async def websocket_generate(websocket: WebSocket):
     """
@@ -244,6 +268,10 @@ async def websocket_generate(websocket: WebSocket):
         SESSION_COMPLETE: {"type": "SESSION_COMPLETE", ...}
         ERROR: {"type": "ERROR", "message": "...", "code": "..."}
     """
+    # Log connection details for debugging
+    print(f"[SocketHandler] Connection attempt from: {websocket.client}")
+    print(f"[SocketHandler] Origin: {websocket.headers.get('origin', 'Not provided')}")
+    
     from socket_handler import SocketHandler
     
     handler = SocketHandler(websocket)
