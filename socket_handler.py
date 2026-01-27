@@ -58,7 +58,7 @@ class SocketHandler:
         Runs until the connection is closed or an error occurs.
         """
         await self.websocket.accept()
-        print(f"[SocketHandler] Connection accepted")
+        print("[SocketHandler] Connection accepted")
         
         try:
             # Wait for session start message
@@ -71,7 +71,7 @@ class SocketHandler:
             await self._message_loop()
             
         except WebSocketDisconnect:
-            print(f"[SocketHandler] Client disconnected")
+            print("[SocketHandler] Client disconnected")
         except Exception as e:
             print(f"[SocketHandler] Error: {e}")
             import traceback
@@ -197,7 +197,7 @@ class SocketHandler:
         if not self.session:
             return
             
-        print(f"[SocketHandler] Session end received")
+        print("[SocketHandler] Session end received")
         self.session.end()
         
         # Signal end of text queue
@@ -254,7 +254,7 @@ class SocketHandler:
         """
         try:
             # Wait for pre-buffer threshold before starting video
-            print(f"[SocketHandler] Waiting for audio pre-buffer...")
+            print("[SocketHandler] Waiting for audio pre-buffer...")
             prebuffer_met = await self.session.wait_for_prebuffer()
             
             if prebuffer_met:
@@ -262,7 +262,7 @@ class SocketHandler:
                       f"({self.session.audio_segments_buffered} segments, "
                       f"{self.session.audio_duration_buffered:.2f}s)")
             else:
-                print(f"[SocketHandler] Pre-buffer timeout, starting video stream anyway")
+                print("[SocketHandler] Pre-buffer timeout, starting video stream anyway")
             
             # Stream video segments
             segment_count = 0
@@ -324,7 +324,7 @@ class SocketHandler:
         
     async def _cleanup(self):
         """Cleanup resources when connection closes."""
-        print(f"[SocketHandler] Cleaning up")
+        print("[SocketHandler] Cleaning up")
         
         # Cancel tasks
         for task in [self._tts_task, self._audio_bridge_task, self._video_task]:
@@ -347,4 +347,4 @@ class SocketHandler:
         if self.session:
             SessionManager().remove_session(self.session.session_id)
             
-        print(f"[SocketHandler] Cleanup complete")
+        print("[SocketHandler] Cleanup complete")
