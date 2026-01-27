@@ -6,26 +6,36 @@
 
 ## 🔴 High Priority
 
-### 1. **Chunk Buffering & Sentence Aggregation**
+### 1. **Chunk Buffering & Sentence Aggregation** ✅ IMPLEMENTED
 **Problem:** Small text chunks (e.g., word-by-word streaming from LLM) generate many tiny TTS calls, increasing latency and overhead.
 
 **Solution:** Buffer incoming chunks and aggregate them at sentence boundaries before TTS.
 
 ```python
-# In tts_streamer.py - ChunkAggregator is already scaffolded
-aggregator = ChunkAggregator(
-    min_chars=50,      # Buffer at least 50 chars
-    max_chars=500,     # Force flush at 500 chars
-    timeout_seconds=2.0  # Flush after 2s silence
-)
+# SessionConfig options
+{
+    "aggregate_chunks": True,      # Enable/disable
+    "aggregate_min_chars": 50,     # Buffer at least 50 chars
+    "aggregate_max_chars": 500,    # Force flush at 500 chars
+    "aggregate_timeout": 1.5       # Flush after 1.5s silence
+}
 ```
 
-**Benefits:**
-- Fewer TTS API calls
-- More natural speech prosody
-- Lower overall latency
+**Implementation:**
+- `ChunkAggregator` class in `tts_streamer.py`
+- Detects sentence endings (., !, ?, etc.) across multiple languages
+- Handles continuation patterns (..., —, etc.)
+- Timeout-based flush for partial sentences
+- Full statistics tracking
 
----
+**Testing:**
+```bash
+# Word-by-word streaming (demonstrates aggregation)
+python test_socket_client.py --word-stream "Hello! This is a test. How are you?"
+
+# Compare with aggregation disabled
+python test_socket_client.py --word-stream "Hello there!" --no-aggregate
+```
 
 ### 2. **Audio Pre-buffering Before Video Starts**
 **Problem:** Starting video immediately on first audio chunk means video may stutter if subsequent TTS is slow.
