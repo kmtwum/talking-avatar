@@ -220,6 +220,36 @@ def health():
     return {"status": "ready"}
 
 
+@app.websocket("/ws/generate")
+async def websocket_generate(websocket: WebSocket):
+    """
+    WebSocket endpoint for streaming speech-to-video generation.
+    
+    Protocol:
+    1. Client connects and sends SESSION_START with config
+    2. Client sends SPEECH_CHUNK messages progressively
+    3. Server streams back binary fMP4 video chunks
+    4. Client sends SESSION_END when done sending text
+    5. Server sends SESSION_COMPLETE and closes connection
+    
+    Message Types (Client -> Server):
+        SESSION_START: {"type": "SESSION_START", "avatar": "sunny", "size": 256, ...}
+        SPEECH_CHUNK: {"type": "SPEECH_CHUNK", "seq": 0, "text": "Hello..."}
+        SESSION_END: {"type": "SESSION_END"}
+    
+    Message Types (Server -> Client):
+        SESSION_STARTED: {"type": "SESSION_STARTED", "session_id": "abc123"}
+        <binary fMP4 video data>
+        STATUS: {"type": "STATUS", "chunks_processed": 3, ...}
+        SESSION_COMPLETE: {"type": "SESSION_COMPLETE", ...}
+        ERROR: {"type": "ERROR", "message": "...", "code": "..."}
+    """
+    from socket_handler import SocketHandler
+    
+    handler = SocketHandler(websocket)
+    await handler.handle_connection()
+
+
 @app.post("/generate/stream")
 async def generate_stream(
     text: str = Form(...),
