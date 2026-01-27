@@ -51,7 +51,7 @@ async def video_call_websocket(websocket: WebSocket, call_id: str):
 
     try:
         while True:
-            # Receive message from client
+            # Receive message from gateway
             data = await websocket.receive_json()
 
             if data["type"] == "generate_response":
