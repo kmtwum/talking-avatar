@@ -37,20 +37,41 @@ python test_socket_client.py --word-stream "Hello! This is a test. How are you?"
 python test_socket_client.py --word-stream "Hello there!" --no-aggregate
 ```
 
-### 2. **Audio Pre-buffering Before Video Starts**
+### 2. **Audio Pre-buffering Before Video Starts** ✅ IMPLEMENTED
 **Problem:** Starting video immediately on first audio chunk means video may stutter if subsequent TTS is slow.
 
 **Solution:** Wait for N audio chunks (or N seconds of audio) before starting video generation.
 
 ```python
-class SocketSession:
-    min_audio_buffer_chunks = 2  # Wait for 2 chunks before starting video
-    min_audio_buffer_seconds = 1.5  # Or 1.5 seconds of audio
+# SessionConfig options
+{
+    "prebuffer_enabled": True,        # Enable/disable
+    "prebuffer_min_chunks": 1,        # Minimum audio chunks to buffer
+    "prebuffer_min_seconds": 1.0,     # Minimum audio seconds to buffer
+    "prebuffer_timeout": 10.0         # Max wait time (fallback)
+}
+```
+
+**Implementation:**
+- `SocketSession` tracks buffer state with `audio_segments_buffered` and `audio_duration_buffered`
+- `prebuffer_ready` asyncio.Event triggers when thresholds met
+- `wait_for_prebuffer()` async method with timeout handling
+- Audio duration detection via librosa
+- `_stream_video_output()` waits for prebuffer before starting
+
+**Testing:**
+```bash
+# Test with custom prebuffer settings
+python test_socket_client.py --prebuffer-chunks 2 --prebuffer-seconds 2.0
+
+# Disable prebuffer (start immediately on first audio)
+python test_socket_client.py --no-prebuffer
 ```
 
 **Benefits:**
 - Smoother video playback
 - Graceful handling of TTS latency spikes
+- Configurable via SESSION_START
 
 ---
 

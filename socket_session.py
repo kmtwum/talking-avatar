@@ -39,6 +39,12 @@ class SessionConfig:
     aggregate_max_chars: int = 500  # Force flush at this limit
     aggregate_timeout: float = 1.5  # Flush after N seconds of silence
     
+    # Audio pre-buffering settings
+    prebuffer_enabled: bool = True  # Enable audio pre-buffering
+    prebuffer_min_chunks: int = 1  # Minimum audio chunks before starting video
+    prebuffer_min_seconds: float = 1.0  # Minimum audio duration before starting video
+    prebuffer_timeout: float = 10.0  # Max time to wait for prebuffer (fallback)
+    
     @classmethod
     def from_dict(cls, data: dict) -> "SessionConfig":
         """Create config from dictionary."""
@@ -54,6 +60,11 @@ class SessionConfig:
             aggregate_min_chars=int(data.get("aggregate_min_chars", 50)),
             aggregate_max_chars=int(data.get("aggregate_max_chars", 500)),
             aggregate_timeout=float(data.get("aggregate_timeout", 1.5)),
+            # Pre-buffer settings
+            prebuffer_enabled=data.get("prebuffer_enabled", True),
+            prebuffer_min_chunks=int(data.get("prebuffer_min_chunks", 1)),
+            prebuffer_min_seconds=float(data.get("prebuffer_min_seconds", 1.0)),
+            prebuffer_timeout=float(data.get("prebuffer_timeout", 10.0)),
         )
 
 
@@ -102,6 +113,7 @@ class SocketSession:
         self.session_complete = asyncio.Event()
         self.first_audio_ready = asyncio.Event()
         self.generation_started = asyncio.Event()
+        self.prebuffer_ready = asyncio.Event()  # Pre-buffer threshold reached
         
         # Error tracking
         self.error: Optional[Exception] = None
@@ -111,13 +123,28 @@ class SocketSession:
         self.frames_generated = 0
         self.total_duration_ms = 0
         
+        # Audio pre-buffer tracking
+        self.audio_segments_buffered = 0
+        self.audio_duration_buffered = 0.0  # Total audio duration in seconds
+        self._audio_paths_buffered: list = []  # Track paths for duration calculation
+        self._prebuffer_start_time: Optional[float] = None
+        
     def start(self):
         """Mark session as started."""
         import time
         self._start_time = time.time()
+        self._prebuffer_start_time = time.time()
         self.state = SessionState.ACTIVE
         self.session_started.set()
-        print(f"[Session {self.session_id}] Started with avatar={self.config.avatar}, size={self.config.size}")
+        
+        # If pre-buffering is disabled, mark it as ready immediately
+        if not self.config.prebuffer_enabled:
+            self.prebuffer_ready.set()
+            print(f"[Session {self.session_id}] Started (pre-buffering disabled)")
+        else:
+            print(f"[Session {self.session_id}] Started with prebuffer: "
+                  f"min_chunks={self.config.prebuffer_min_chunks}, "
+                  f"min_seconds={self.config.prebuffer_min_seconds}s")
         
     async def handle_chunk(self, chunk_data: dict) -> ChunkInfo:
         """
@@ -155,16 +182,101 @@ class SocketSession:
         return chunk
     
     async def queue_audio(self, seq: int, audio_path: str):
-        """Queue generated audio for video processing."""
+        """
+        Queue generated audio for video processing.
+        
+        Also tracks audio buffer state and triggers prebuffer_ready
+        when thresholds are met.
+        """
         if seq in self.chunks:
             self.chunks[seq].audio_path = audio_path
-            
+        
+        # Get audio duration and track it
+        audio_duration = self._get_audio_duration(audio_path)
+        self.audio_segments_buffered += 1
+        self.audio_duration_buffered += audio_duration
+        self._audio_paths_buffered.append(audio_path)
+        
         await self.audio_queue.put((seq, audio_path))
         
         # Signal that first audio is ready
         if not self.first_audio_ready.is_set():
             self.first_audio_ready.set()
-            print(f"[Session {self.session_id}] First audio ready")
+            print(f"[Session {self.session_id}] First audio ready ({audio_duration:.2f}s)")
+        
+        # Check pre-buffer thresholds
+        if not self.prebuffer_ready.is_set():
+            self._check_prebuffer_threshold()
+    
+    def _get_audio_duration(self, audio_path: str) -> float:
+        """Get the duration of an audio file in seconds."""
+        try:
+            import librosa
+            duration = librosa.get_duration(path=audio_path)
+            return duration
+        except Exception as e:
+            # Fallback: estimate 3 seconds if we can't read the file
+            print(f"[Session {self.session_id}] Could not get audio duration: {e}")
+            return 3.0
+    
+    def _check_prebuffer_threshold(self):
+        """Check if pre-buffer thresholds are met and trigger event."""
+        import time
+        
+        config = self.config
+        
+        # Check chunk count threshold
+        chunks_met = self.audio_segments_buffered >= config.prebuffer_min_chunks
+        
+        # Check duration threshold
+        duration_met = self.audio_duration_buffered >= config.prebuffer_min_seconds
+        
+        # Check timeout (fallback)
+        timeout_elapsed = False
+        if self._prebuffer_start_time:
+            elapsed = time.time() - self._prebuffer_start_time
+            timeout_elapsed = elapsed >= config.prebuffer_timeout
+        
+        if chunks_met and duration_met:
+            self.prebuffer_ready.set()
+            print(f"[Session {self.session_id}] Pre-buffer ready: "
+                  f"{self.audio_segments_buffered} chunks, "
+                  f"{self.audio_duration_buffered:.2f}s buffered")
+        elif timeout_elapsed:
+            self.prebuffer_ready.set()
+            print(f"[Session {self.session_id}] Pre-buffer timeout reached, starting anyway: "
+                  f"{self.audio_segments_buffered} chunks, "
+                  f"{self.audio_duration_buffered:.2f}s buffered")
+    
+    async def wait_for_prebuffer(self) -> bool:
+        """
+        Wait for pre-buffer to be ready or timeout.
+        
+        Returns:
+            True if prebuffer threshold was met, False if timed out
+        """
+        import time
+        
+        if not self.config.prebuffer_enabled:
+            return True
+            
+        start = time.time()
+        
+        # Wait for prebuffer with timeout
+        try:
+            await asyncio.wait_for(
+                self.prebuffer_ready.wait(),
+                timeout=self.config.prebuffer_timeout
+            )
+            return True
+        except asyncio.TimeoutError:
+            # Force trigger prebuffer ready on timeout
+            self.prebuffer_ready.set()
+            elapsed = time.time() - start
+            print(f"[Session {self.session_id}] Pre-buffer wait timed out after {elapsed:.2f}s, "
+                  f"proceeding with {self.audio_segments_buffered} chunks, "
+                  f"{self.audio_duration_buffered:.2f}s")
+            return False
     
     async def queue_video_segment(self, segment: bytes):
         """Queue video segment for output streaming."""

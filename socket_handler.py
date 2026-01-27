@@ -247,12 +247,22 @@ class SocketHandler:
         """
         Stream video segments to the client as they're generated.
         
+        Waits for audio pre-buffer before starting video generation
+        to ensure smooth playback.
+        
         Sends binary fMP4 segments via WebSocket.
         """
         try:
-            # Wait for first audio before starting video generation
-            await self.session.first_audio_ready.wait()
-            print(f"[SocketHandler] Starting video stream")
+            # Wait for pre-buffer threshold before starting video
+            print(f"[SocketHandler] Waiting for audio pre-buffer...")
+            prebuffer_met = await self.session.wait_for_prebuffer()
+            
+            if prebuffer_met:
+                print(f"[SocketHandler] Pre-buffer threshold met, starting video stream "
+                      f"({self.session.audio_segments_buffered} segments, "
+                      f"{self.session.audio_duration_buffered:.2f}s)")
+            else:
+                print(f"[SocketHandler] Pre-buffer timeout, starting video stream anyway")
             
             # Stream video segments
             segment_count = 0
@@ -274,7 +284,8 @@ class SocketHandler:
                 "type": MessageType.SESSION_COMPLETE,
                 "total_duration_ms": self.session.total_duration_ms,
                 "chunks_processed": self.session.chunks_processed,
-                "frames_generated": self.session.frames_generated
+                "frames_generated": self.session.frames_generated,
+                "audio_buffered_seconds": round(self.session.audio_duration_buffered, 2)
             })
             
         except asyncio.CancelledError:

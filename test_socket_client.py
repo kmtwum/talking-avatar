@@ -28,6 +28,9 @@ async def test_socket_streaming(
     aggregate_min_chars: int = 50,
     aggregate_max_chars: int = 500,
     aggregate_timeout: float = 1.5,
+    prebuffer_enabled: bool = True,
+    prebuffer_min_chunks: int = 1,
+    prebuffer_min_seconds: float = 1.0,
     delay_between_chunks: float = 0.1
 ):
     """
@@ -42,6 +45,9 @@ async def test_socket_streaming(
         aggregate_min_chars: Minimum chars before flush
         aggregate_max_chars: Max chars before force flush
         aggregate_timeout: Timeout in seconds
+        prebuffer_enabled: Enable audio pre-buffering
+        prebuffer_min_chunks: Minimum audio chunks before starting video
+        prebuffer_min_seconds: Minimum audio seconds before starting video
         delay_between_chunks: Delay between sending chunks
     """
     try:
@@ -54,6 +60,9 @@ async def test_socket_streaming(
     print(f"Aggregation: {'ENABLED' if aggregate else 'DISABLED'}")
     if aggregate:
         print(f"  min_chars={aggregate_min_chars}, max_chars={aggregate_max_chars}, timeout={aggregate_timeout}s")
+    print(f"Pre-buffer: {'ENABLED' if prebuffer_enabled else 'DISABLED'}")
+    if prebuffer_enabled:
+        print(f"  min_chunks={prebuffer_min_chunks}, min_seconds={prebuffer_min_seconds}s")
     print(f"Sending {len(chunks)} chunks with {delay_between_chunks}s delay")
     print()
     
@@ -71,6 +80,9 @@ async def test_socket_streaming(
             "aggregate_min_chars": aggregate_min_chars,
             "aggregate_max_chars": aggregate_max_chars,
             "aggregate_timeout": aggregate_timeout,
+            "prebuffer_enabled": prebuffer_enabled,
+            "prebuffer_min_chunks": prebuffer_min_chunks,
+            "prebuffer_min_seconds": prebuffer_min_seconds,
         }))
         
         # Wait for SESSION_STARTED
@@ -151,6 +163,8 @@ async def receive_video(ws, start_time: float):
                     print(f"  Duration: {msg.get('total_duration_ms')}ms")
                     print(f"  Chunks processed: {msg.get('chunks_processed')}")
                     print(f"  Frames generated: {msg.get('frames_generated')}")
+                    if msg.get('audio_buffered_seconds'):
+                        print(f"  Audio buffered: {msg.get('audio_buffered_seconds')}s")
                     break
                     
                 elif msg_type == "ERROR":
@@ -220,7 +234,12 @@ Examples:
     parser.add_argument("--no-aggregate", action="store_true", help="Disable chunk aggregation")
     parser.add_argument("--min-chars", type=int, default=50, help="Minimum chars before flush")
     parser.add_argument("--max-chars", type=int, default=500, help="Maximum chars before force flush")
-    parser.add_argument("--timeout", type=float, default=1.5, help="Aggregation timeout in seconds")
+    parser.add_argument("--agg-timeout", type=float, default=1.5, help="Aggregation timeout in seconds")
+    
+    # Pre-buffer settings
+    parser.add_argument("--no-prebuffer", action="store_true", help="Disable audio pre-buffering")
+    parser.add_argument("--prebuffer-chunks", type=int, default=1, help="Minimum audio chunks before video starts")
+    parser.add_argument("--prebuffer-seconds", type=float, default=1.0, help="Minimum audio seconds before video starts")
     
     args = parser.parse_args()
     
@@ -247,7 +266,10 @@ Examples:
         aggregate=not args.no_aggregate,
         aggregate_min_chars=args.min_chars,
         aggregate_max_chars=args.max_chars,
-        aggregate_timeout=args.timeout,
+        aggregate_timeout=args.agg_timeout,
+        prebuffer_enabled=not args.no_prebuffer,
+        prebuffer_min_chunks=args.prebuffer_chunks,
+        prebuffer_min_seconds=args.prebuffer_seconds,
         delay_between_chunks=args.delay,
     ))
 
