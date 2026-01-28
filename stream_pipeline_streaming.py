@@ -255,7 +255,6 @@ class StreamingSDK(StreamSDK):
                     audio_chunk = np.pad(audio_chunk, (0, split_len - len(audio_chunk)), mode="constant")
                 
                 chunk_count += 1
-                print(f"[STREAM] Processing audio chunk {chunk_count} at {time.time() - start_time:.3f}s")
                 self.run_chunk(audio_chunk, chunk_size)
             
             print(f"[STREAM] Finished processing {chunk_count} audio chunks at {time.time() - start_time:.3f}s")
