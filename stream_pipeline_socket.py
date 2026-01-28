@@ -115,13 +115,13 @@ class SocketStreamingSDK(StreamingSDK):
         """
         import time
         start_time = time.time()
-        print(f"[SocketSDK] Starting progressive generation")
+        print("[SocketSDK] Starting progressive generation")
         
         if not self._streaming_mode:
             raise RuntimeError("Must call setup_socket_streaming() before generate_progressive()")
         
         # Wait for first audio segment
-        print(f"[SocketSDK] Waiting for first audio segment...")
+        print("[SocketSDK] Waiting for first audio segment...")
         
         first_segment = None
         while not self._audio_segments:
@@ -152,7 +152,7 @@ class SocketStreamingSDK(StreamingSDK):
         generation_thread.start()
         
         # Yield init segment
-        print(f"[SocketSDK] Waiting for init segment...")
+        print("[SocketSDK] Waiting for init segment...")
         try:
             init_segment = self._fmp4_writer.get_init_segment(timeout=15.0)
             print(f"[SocketSDK] Init segment ready ({len(init_segment)} bytes)")
@@ -340,14 +340,22 @@ class SocketVideoGenerator:
         """Cleanup resources."""
         if self._sdk:
             try:
+                # Signal stop to any running generation
+                self._sdk.stop_event.set()
+                self._sdk._audio_complete.set()
+                
+                # Close the SDK
                 self._sdk.close()
-            except:
-                pass
+                
+                # Clear audio segments
+                self._sdk._audio_segments = []
+                self._sdk._total_audio = None
+                
+            except Exception as e:
+                print(f"[VideoGen] Cleanup error: {e}")
+            finally:
+                self._sdk = None
             
         # Clean up temp audio files
-        for segment in (self._sdk._audio_segments if self._sdk else []):
-            if segment.audio_path and os.path.exists(segment.audio_path):
-                try:
-                    os.remove(segment.audio_path)
-                except:
-                    pass
+        # (files are cleaned by SDK close, but ensure nothing remains)
+        print("[VideoGen] Cleanup complete")

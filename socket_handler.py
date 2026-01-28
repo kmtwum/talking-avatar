@@ -145,6 +145,8 @@ class SocketHandler:
         
     async def _message_loop(self):
         """Process incoming messages until session ends."""
+        session_end_received = False
+        
         while self.session and self.session.state != SessionState.CLOSED:
             try:
                 message = await asyncio.wait_for(
@@ -154,20 +156,38 @@ class SocketHandler:
                 
                 await self._handle_message(message)
                 
+                # Check if we received SESSION_END
+                if message.get("type") == MessageType.SESSION_END:
+                    session_end_received = True
+                    break  # Exit message loop, but will wait for video below
+                
             except asyncio.TimeoutError:
-                # Check if video is still generating
-                if self._video_task and self._video_task.done():
+                # If video task is done and we got session_end, exit
+                if session_end_received and self._video_task and self._video_task.done():
                     break
                 continue
                 
             except WebSocketDisconnect:
                 raise
+        
+        # After SESSION_END, wait for video generation to complete
+        if session_end_received and self._video_task and not self._video_task.done():
+            print("[SocketHandler] SESSION_END received, waiting for video generation to complete...")
+            try:
+                # Wait for video task to complete (with timeout)
+                await asyncio.wait_for(self._video_task, timeout=180.0)
+            except asyncio.TimeoutError:
+                print("[SocketHandler] Video generation timed out after 180s")
+            except Exception as e:
+                print(f"[SocketHandler] Error waiting for video: {e}")
                 
     async def _handle_message(self, message: dict):
         """Route incoming message to appropriate handler."""
         msg_type = message.get("type")
+        print(f"[SocketHandler] Received message type: {msg_type}")
         
         if msg_type == MessageType.SPEECH_CHUNK:
+            print(f"[SocketHandler] Processing SPEECH_CHUNK: seq={message.get('seq')}")
             await self._handle_speech_chunk(message)
             
         elif msg_type == MessageType.SESSION_END:
