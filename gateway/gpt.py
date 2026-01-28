@@ -47,7 +47,7 @@ class GPT:
         voice_id: Optional[str] = None,
         system_prompt: Optional[str] = None,
         model: str = "gpt-4",
-        avatar_ws_url: str = "ws://localhost:8000/ws/generate",
+        avatar_ws_url: str = "ws://77.68.21.101:8002/ws/generate",
         on_token: Optional[Callable[[str, int], Awaitable[None]]] = None,
         on_sentence: Optional[Callable[[str, int], Awaitable[None]]] = None,
     ):

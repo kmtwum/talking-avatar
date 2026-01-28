@@ -19,7 +19,7 @@ from websockets.exceptions import ConnectionClosed
 @dataclass
 class AvatarConfig:
     """Configuration for avatar session."""
-    avatar_ws_url: str = "ws://localhost:8000/ws/generate"
+    avatar_ws_url: str = "ws://77.68.21.101:8002/ws/generate"
     avatar: str = "sunny"
     size: int = 256
     tts_preference: str = "coqui"
@@ -111,11 +111,17 @@ class AvatarSession:
         print(f"[AvatarSession {self.session_id}] Connecting to {self.config.avatar_ws_url}")
         
         try:
+            # Add extra headers to bypass potential origin checks from proxies
+            extra_headers = {
+                "Origin": self.config.avatar_ws_url.replace("ws://", "http://").replace("wss://", "https://").rsplit("/", 1)[0],
+            }
+            
             self.avatar_ws = await websockets.connect(
                 self.config.avatar_ws_url,
                 max_size=10 * 1024 * 1024,  # 10MB max message
                 ping_interval=20,
-                ping_timeout=10
+                ping_timeout=10,
+                extra_headers=extra_headers,
             )
         except Exception as e:
             print(f"[AvatarSession {self.session_id}] Connection failed: {e}")

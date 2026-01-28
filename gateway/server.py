@@ -30,11 +30,15 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from gateway.llm_to_video import GatewayConfig, stream_llm_to_video
 
 
 # Configuration from environment
-AVATAR_SERVICE_URL = os.getenv("AVATAR_WS_URL", "ws://localhost:8000/ws/generate")
+AVATAR_SERVICE_URL = os.getenv("AVATAR_WS_URL", "ws://77.68.21.101:8002/ws/generate")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 
@@ -108,57 +112,65 @@ async def websocket_chat(websocket: WebSocket):
     print("[Gateway] Client connected")
     
     try:
-        # Wait for START message
-        message = await asyncio.wait_for(
-            websocket.receive_json(),
-            timeout=30.0
-        )
-        
-        request = ChatRequest(**message)
-        
-        if request.type != "START":
-            await websocket.send_json({
-                "type": "ERROR",
-                "message": "Expected START message",
-                "code": "PROTOCOL_ERROR"
-            })
-            return
-        
-        print(f"[Gateway] Processing: avatar={request.avatar}, "
-              f"prompt='{request.prompt[:50]}...'")
-        
-        # Configure the pipeline
-        config = GatewayConfig(
-            avatar_ws_url=AVATAR_SERVICE_URL,
-            avatar=request.avatar,
-            size=request.size,
-            voice_id=request.voice_id,
-            # Gateway-side aggregation
-            gateway_aggregate=True,
-            gateway_min_chars=40,
-            gateway_max_chars=200,
-            gateway_timeout=0.8,
-            # Avatar-side settings
-            avatar_aggregate=True,
-            prebuffer_enabled=True,
-            prebuffer_min_seconds=1.0,
-        )
-        
-        # Stream LLM to video
-        await stream_openai_to_video(
-            websocket=websocket,
-            prompt=request.prompt,
-            system_prompt=request.system_prompt,
-            model=request.model,
-            config=config,
-        )
-        
-    except asyncio.TimeoutError:
-        await websocket.send_json({
-            "type": "ERROR",
-            "message": "Timeout waiting for START message",
-            "code": "TIMEOUT"
-        })
+        # Loop to handle multiple requests on same connection
+        while True:
+            try:
+                # Wait for START message
+                message = await asyncio.wait_for(
+                    websocket.receive_json(),
+                    timeout=300.0  # 5 minute idle timeout
+                )
+                
+                request = ChatRequest(**message)
+                
+                if request.type != "START":
+                    await websocket.send_json({
+                        "type": "ERROR",
+                        "message": "Expected START message",
+                        "code": "PROTOCOL_ERROR"
+                    })
+                    continue  # Wait for next message instead of closing
+                
+                print(f"[Gateway] Processing: avatar={request.avatar}, "
+                      f"prompt='{request.prompt[:50]}...'")
+                
+                # Configure the pipeline
+                config = GatewayConfig(
+                    avatar_ws_url=AVATAR_SERVICE_URL,
+                    avatar=request.avatar,
+                    size=request.size,
+                    voice_id=request.voice_id,
+                    # Gateway-side aggregation
+                    gateway_aggregate=True,
+                    gateway_min_chars=40,
+                    gateway_max_chars=200,
+                    gateway_timeout=0.8,
+                    # Avatar-side settings
+                    avatar_aggregate=True,
+                    prebuffer_enabled=True,
+                    prebuffer_min_seconds=1.0,
+                )
+                
+                # Stream LLM to video
+                await stream_openai_to_video(
+                    websocket=websocket,
+                    prompt=request.prompt,
+                    system_prompt=request.system_prompt,
+                    model=request.model,
+                    config=config,
+                )
+                
+                # Send ready for next request
+                await websocket.send_json({
+                    "type": "READY",
+                    "message": "Ready for next prompt"
+                })
+                
+            except asyncio.TimeoutError:
+                # Idle timeout - close connection
+                print("[Gateway] Idle timeout, closing connection")
+                break
+                
     except WebSocketDisconnect:
         print("[Gateway] Client disconnected")
     except Exception as e:
@@ -185,7 +197,7 @@ async def stream_openai_to_video(
     """Stream OpenAI response to video."""
     from openai import AsyncOpenAI
     
-    client = AsyncOpenAI()
+    client = AsyncOpenAI(api_key=OPENAI_API_KEY)
     
     messages = []
     if system_prompt:
@@ -198,7 +210,7 @@ async def stream_openai_to_video(
             model=model,
             messages=messages,
             stream=True,
-            max_tokens=500,  # Limit for demo
+            max_tokens=5000,  # Limit for demo
         )
         
         async for chunk in response:

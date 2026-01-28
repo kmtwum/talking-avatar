@@ -32,7 +32,7 @@ CONTINUATION_RE = re.compile(r'[,;:—–]\s*$|\.{2,}\s*$')
 @dataclass
 class GatewayConfig:
     """Configuration for the gateway."""
-    avatar_ws_url: str = "ws://localhost:8000/ws/generate"
+    avatar_ws_url: str = "ws://77.68.21.101:8002/ws/generate"
     
     # Avatar session settings
     avatar: str = "sunny"
@@ -140,10 +140,14 @@ class AvatarSession:
         self.session_id = str(uuid.uuid4())[:8]
         self.avatar_ws = None
         self.closed = False
+        self._ending = False
         
         # Queues for async pipeline
         self.sentence_queue: asyncio.Queue = asyncio.Queue()
         self.video_queue: asyncio.Queue = asyncio.Queue(maxsize=120)
+        
+        # Event for session completion (set when avatar sends SESSION_COMPLETE)
+        self.session_complete = asyncio.Event()
         
         # Statistics
         self.sentences_sent = 0
@@ -162,6 +166,20 @@ class AvatarSession:
         print(f"[Gateway {self.session_id}] Connecting to avatar: {self.config.avatar_ws_url}")
         
         try:
+            # Extract host from URL for proper headers
+            import urllib.parse
+            parsed = urllib.parse.urlparse(self.config.avatar_ws_url)
+            host = parsed.netloc  # e.g., "77.68.21.101:8002"
+            origin = f"http://{host}" if parsed.scheme == "ws" else f"https://{host}"
+            
+            # Add extra headers to bypass potential proxy issues
+            extra_headers = {
+                "Origin": origin,
+                "Host": host,
+            }
+            
+            print(f"[Gateway {self.session_id}] Using headers: {extra_headers}")
+            
             self.avatar_ws = await websockets.connect(
                 self.config.avatar_ws_url,
                 max_size=10 * 1024 * 1024,  # 10MB max message
@@ -217,11 +235,16 @@ class AvatarSession:
                     )
                     
                     if msg is None:
-                        # End signal
+                        # End signal - send SESSION_END to avatar
+                        print(f"[Gateway {self.session_id}] Sender finished, sending SESSION_END")
+                        await self.avatar_ws.send(json.dumps({
+                            "type": "SESSION_END"
+                        }))
                         break
                     
                     await self.avatar_ws.send(json.dumps(msg))
                     self.sentences_sent += 1
+                    print(f"[Gateway {self.session_id}] Sent sentence {self.sentences_sent} to avatar")
                     
                 except asyncio.TimeoutError:
                     continue
@@ -252,6 +275,8 @@ class AvatarSession:
                         print(f"[Gateway {self.session_id}] Avatar session complete: {msg}")
                         # Forward to client
                         await self._forward_to_client_json(msg)
+                        # Signal completion
+                        self.session_complete.set()
                         break
                         
                     elif msg_type == "ERROR":
@@ -264,11 +289,15 @@ class AvatarSession:
                         
         except ConnectionClosed:
             print(f"[Gateway {self.session_id}] Avatar connection closed in receiver")
+            # Set complete so end() doesn't hang
+            self.session_complete.set()
         except Exception as e:
             print(f"[Gateway {self.session_id}] Avatar receiver error: {e}")
+            self.session_complete.set()
             
     async def _client_sender(self):
         """Send video chunks from queue to client WebSocket."""
+        chunks_sent = 0
         try:
             while not self.closed:
                 try:
@@ -277,8 +306,24 @@ class AvatarSession:
                         timeout=1.0
                     )
                     await self.client_ws.send_bytes(chunk)
+                    chunks_sent += 1
+                    if chunks_sent == 1:
+                        print(f"[Gateway {self.session_id}] Sent first chunk to client ({len(chunk)} bytes)")
+                    elif chunks_sent % 10 == 0:
+                        print(f"[Gateway {self.session_id}] Sent {chunks_sent} chunks to client")
                 except asyncio.TimeoutError:
                     continue
+            
+            # Drain any remaining chunks after closed
+            while not self.video_queue.empty():
+                try:
+                    chunk = self.video_queue.get_nowait()
+                    await self.client_ws.send_bytes(chunk)
+                    chunks_sent += 1
+                except:
+                    break
+                    
+            print(f"[Gateway {self.session_id}] Client sender complete: {chunks_sent} chunks sent")
                     
         except ConnectionClosed:
             print(f"[Gateway {self.session_id}] Client connection closed")
@@ -302,23 +347,37 @@ class AvatarSession:
         print(f"[Gateway {self.session_id}] Queued sentence {seq}: '{text[:50]}...'")
         
     async def end(self):
-        """End the avatar session."""
-        self.closed = True
+        """End the avatar session - wait for pending work to complete."""
+        if self._ending:
+            return
+        self._ending = True
         
-        # Signal end to sender
+        # Signal sender to finish (it will send SESSION_END after draining queue)
         await self.sentence_queue.put(None)
         
-        # Send SESSION_END to avatar
-        if self.avatar_ws and not self.avatar_ws.closed:
+        # Wait for sender to finish (which sends SESSION_END after draining)
+        if self._sender_task and not self._sender_task.done():
             try:
-                await self.avatar_ws.send(json.dumps({
-                    "type": "SESSION_END"
-                }))
-            except Exception as e:
-                print(f"[Gateway {self.session_id}] Error sending SESSION_END: {e}")
+                await asyncio.wait_for(self._sender_task, timeout=30.0)
+            except asyncio.TimeoutError:
+                print(f"[Gateway {self.session_id}] Sender task timed out")
+                self._sender_task.cancel()
+            except asyncio.CancelledError:
+                pass
         
-        # Wait for tasks to complete
-        for task in [self._sender_task, self._receiver_task, self._client_sender_task]:
+        # Wait for video completion (receiver sets this when SESSION_COMPLETE arrives)
+        print(f"[Gateway {self.session_id}] Waiting for video completion...")
+        try:
+            await asyncio.wait_for(self.session_complete.wait(), timeout=120.0)
+            print(f"[Gateway {self.session_id}] Video complete, received {self.video_chunks_received} chunks")
+        except asyncio.TimeoutError:
+            print(f"[Gateway {self.session_id}] Video completion timed out (120s)")
+        
+        # Now we can close
+        self.closed = True
+        
+        # Cancel remaining tasks
+        for task in [self._receiver_task, self._client_sender_task]:
             if task and not task.done():
                 task.cancel()
                 try:
@@ -327,8 +386,11 @@ class AvatarSession:
                     pass
         
         # Close avatar connection
-        if self.avatar_ws and not self.avatar_ws.closed:
-            await self.avatar_ws.close()
+        if self.avatar_ws:
+            try:
+                await self.avatar_ws.close()
+            except:
+                pass
         
         elapsed = time.time() - self.start_time if self.start_time else 0
         print(f"[Gateway {self.session_id}] Session ended: "
