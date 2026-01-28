@@ -58,7 +58,7 @@ async def video_call_websocket(websocket: WebSocket, call_id: str):
                 text = data["text"]
 
                 # 3. Wait for TTS
-                audio_path = generate_tts(text)
+                audio_path = generate_tts(text, "elevenlabs")
 
                 # 4. Start video generation
                 await websocket.send_json({"status": "generating_video"})

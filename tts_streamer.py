@@ -364,7 +364,8 @@ class TTSStreamer:
         Uses async HTTP to avoid blocking the event loop.
         """
         config = self.session.config
-        
+
+        print(f"[TTSStreamer {self.session.session_id}] Generating TTS for '{text[:50]} using {config.tts_preference}...' ")
         if config.tts_preference == "coqui":
             return await self._generate_coqui(text)
         else:
