@@ -17,6 +17,8 @@ from typing import Optional, List, Tuple
 from dataclasses import dataclass
 
 from socket_session import SocketSession, ChunkInfo
+from dotenv import load_dotenv
+load_dotenv()
 
 
 @dataclass
