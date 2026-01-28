@@ -306,6 +306,9 @@ class TTSStreamer:
                     
                     await self.session.audio_queue.put(None)
                     
+                    # Signal that all audio is ready for video generation
+                    self.session.all_audio_ready.set()
+                    
                     # Log aggregation stats
                     status = self._aggregator.get_buffer_status()
                     print(f"[TTSStreamer {self.session.session_id}] Aggregation complete: "

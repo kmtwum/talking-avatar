@@ -114,6 +114,7 @@ class SocketSession:
         self.first_audio_ready = asyncio.Event()
         self.generation_started = asyncio.Event()
         self.prebuffer_ready = asyncio.Event()  # Pre-buffer threshold reached
+        self.all_audio_ready = asyncio.Event()  # All TTS complete, ready for full video
         
         # Error tracking
         self.error: Optional[Exception] = None

@@ -286,16 +286,16 @@ class SocketHandler:
         Sends binary fMP4 segments via WebSocket.
         """
         try:
-            # Wait for pre-buffer threshold before starting video
-            print("[SocketHandler] Waiting for audio pre-buffer...", flush=True)
-            prebuffer_met = await self.session.wait_for_prebuffer()
-            
-            if prebuffer_met:
-                print(f"[SocketHandler] Pre-buffer threshold met, starting video stream "
+            # Wait for ALL audio to be ready before starting video
+            # This ensures FFmpeg has complete audio and won't cut off early
+            print("[SocketHandler] Waiting for all audio to be ready...", flush=True)
+            try:
+                await asyncio.wait_for(self.session.all_audio_ready.wait(), timeout=120.0)
+                print(f"[SocketHandler] All audio ready, starting video stream "
                       f"({self.session.audio_segments_buffered} segments, "
                       f"{self.session.audio_duration_buffered:.2f}s)", flush=True)
-            else:
-                print("[SocketHandler] Pre-buffer timeout, starting video stream anyway", flush=True)
+            except asyncio.TimeoutError:
+                print("[SocketHandler] Timeout waiting for audio, starting anyway", flush=True)
             
             # Stream video segments
             segment_count = 0
