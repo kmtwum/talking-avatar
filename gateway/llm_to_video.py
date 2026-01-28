@@ -36,8 +36,8 @@ class GatewayConfig:
     
     # Avatar session settings
     avatar: str = "sunny"
-    size: int = 256
-    tts_preference: str = "coqui"  # or "elevenlabs"
+    size: int = 512
+    tts_preference: str = "elevenlabs"  # or "elevenlabs"
     voice_id: Optional[str] = None
     
     # Aggregation (gateway-side sentence buffering)

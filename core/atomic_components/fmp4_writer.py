@@ -372,11 +372,18 @@ class FMP4StreamWriter:
             Bytes containing media segments
         """
         moof_data = None
+        empty_count = 0
+        max_empty = 5  # Exit after 5 consecutive empty gets (5 * timeout seconds)
         
         while True:
             try:
                 item = self._output_queue.get(timeout=timeout)
+                empty_count = 0  # Reset on successful get
             except queue.Empty:
+                empty_count += 1
+                if empty_count >= max_empty:
+                    print(f"[FMP4] iter_segments: no data for {max_empty * timeout}s, exiting")
+                    break
                 continue
             
             if item is None:

@@ -299,6 +299,7 @@ class SocketHandler:
             print(f"[SocketHandler] Video streaming complete: {segment_count} segments")
             
             # Send completion message
+            print("[SocketHandler] Sending SESSION_COMPLETE...")
             self.session.complete()
             await self._send_json({
                 "type": MessageType.SESSION_COMPLETE,
@@ -307,9 +308,10 @@ class SocketHandler:
                 "frames_generated": self.session.frames_generated,
                 "audio_buffered_seconds": round(self.session.audio_duration_buffered, 2)
             })
+            print("[SocketHandler] SESSION_COMPLETE sent successfully")
             
         except asyncio.CancelledError:
-            pass
+            print("[SocketHandler] Video streaming cancelled")
         except Exception as e:
             print(f"[SocketHandler] Video stream error: {e}")
             import traceback

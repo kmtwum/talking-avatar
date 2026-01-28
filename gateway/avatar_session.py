@@ -22,7 +22,7 @@ class AvatarConfig:
     avatar_ws_url: str = "ws://77.68.21.101:8002/ws/generate"
     avatar: str = "sunny"
     size: int = 256
-    tts_preference: str = "coqui"
+    tts_preference: str = "elevenlabs"
     voice_id: Optional[str] = None
     user_id: Optional[str] = None
     voice_source: Optional[str] = None

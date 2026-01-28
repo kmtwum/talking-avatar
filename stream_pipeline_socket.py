@@ -161,10 +161,21 @@ class SocketStreamingSDK(StreamingSDK):
             raise RuntimeError("Failed to get initialization segment")
         
         # Yield media segments as they become available
-        for segment in self._fmp4_writer.iter_segments(timeout=2.0):
+        segment_count = 0
+        print("[SocketSDK] Starting segment iteration...")
+        for segment in self._fmp4_writer.iter_segments(timeout=5.0):  # Increased timeout
+            segment_count += 1
+            if segment_count == 1:
+                print(f"[SocketSDK] First media segment ({len(segment)} bytes)")
+            elif segment_count % 10 == 0:
+                print(f"[SocketSDK] Yielded {segment_count} segments")
             yield segment
             
-        generation_thread.join()
+        print(f"[SocketSDK] Segment iteration complete: {segment_count} segments")
+        
+        generation_thread.join(timeout=30.0)
+        if generation_thread.is_alive():
+            print("[SocketSDK] Warning: Generation thread still alive after join")
         print(f"[SocketSDK] Progressive generation complete at {time.time() - start_time:.3f}s")
         
         # Cleanup
@@ -295,8 +306,8 @@ class SocketVideoGenerator:
     def __init__(
         self,
         source_path: str,
-        width: int = 256,
-        height: int = 256,
+        width: int = 512,
+        height: int = 512,
         cfg_pkl: str = None,
         data_root: str = None,
     ):
