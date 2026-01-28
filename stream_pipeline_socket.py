@@ -161,22 +161,44 @@ class SocketStreamingSDK(StreamingSDK):
             raise RuntimeError("Failed to get initialization segment")
         
         # Yield media segments as they become available
+        # NOTE: iter_segments uses blocking queue.get() - we need to run it
+        # in an executor to not block the asyncio event loop
         segment_count = 0
-        print("[SocketSDK] Starting segment iteration...")
-        for segment in self._fmp4_writer.iter_segments(timeout=5.0):  # Increased timeout
-            segment_count += 1
-            if segment_count == 1:
-                print(f"[SocketSDK] First media segment ({len(segment)} bytes)")
-            elif segment_count % 10 == 0:
-                print(f"[SocketSDK] Yielded {segment_count} segments")
-            yield segment
+        print("[SocketSDK] Starting segment iteration...", flush=True)
+        
+        loop = asyncio.get_event_loop()
+        segment_iter = self._fmp4_writer.iter_segments(timeout=0.5)  # Short timeout for responsiveness
+        
+        while True:
+            try:
+                # Run the blocking next() in a thread pool to not block event loop
+                segment = await loop.run_in_executor(
+                    None,  # Use default executor
+                    lambda: next(segment_iter, None)
+                )
+                
+                if segment is None:
+                    break
+                    
+                segment_count += 1
+                if segment_count == 1:
+                    print(f"[SocketSDK] First media segment ({len(segment)} bytes)", flush=True)
+                elif segment_count % 10 == 0:
+                    print(f"[SocketSDK] Yielded {segment_count} segments", flush=True)
+                yield segment
+                
+            except StopIteration:
+                break
+            except Exception as e:
+                print(f"[SocketSDK] Segment iteration error: {e}", flush=True)
+                break
             
-        print(f"[SocketSDK] Segment iteration complete: {segment_count} segments")
+        print(f"[SocketSDK] Segment iteration complete: {segment_count} segments", flush=True)
         
         generation_thread.join(timeout=30.0)
         if generation_thread.is_alive():
-            print("[SocketSDK] Warning: Generation thread still alive after join")
-        print(f"[SocketSDK] Progressive generation complete at {time.time() - start_time:.3f}s")
+            print("[SocketSDK] Warning: Generation thread still alive after join", flush=True)
+        print(f"[SocketSDK] Progressive generation complete at {time.time() - start_time:.3f}s", flush=True)
         
         # Cleanup
         self._fmp4_writer.close()
