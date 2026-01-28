@@ -27,15 +27,15 @@ class SessionState(Enum):
 class SessionConfig:
     """Configuration for a socket session."""
     avatar: str = "sunny"
-    size: int = 256
-    tts_preference: str = "coqui"
+    size: int = 512
+    tts_preference: str = "elevenlabs"
     tts_voice_id: Optional[str] = None
     user_id: Optional[str] = None
     voice_source: Optional[str] = None
     
     # Chunk aggregation settings
     aggregate_chunks: bool = True  # Enable chunk aggregation
-    aggregate_min_chars: int = 50  # Minimum chars before considering flush
+    aggregate_min_chars: int = 30  # Minimum chars before considering flush
     aggregate_max_chars: int = 500  # Force flush at this limit
     aggregate_timeout: float = 1.5  # Flush after N seconds of silence
     
