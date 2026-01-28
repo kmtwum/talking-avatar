@@ -47,10 +47,10 @@ class ChatRequest(BaseModel):
     type: str = "START"
     prompt: str
     avatar: str = "sunny"
-    size: int = 256
+    size: int = 512
     voice_id: Optional[str] = None
     system_prompt: Optional[str] = None
-    model: str = "gpt-4"
+    model: str = "gpt-4.1"
 
 
 @asynccontextmanager
