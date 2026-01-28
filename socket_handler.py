@@ -146,6 +146,10 @@ class SocketHandler:
     async def _message_loop(self):
         """Process incoming messages until session ends."""
         session_end_received = False
+        message_count = 0
+        timeout_count = 0
+        
+        print("[SocketHandler] Message loop started", flush=True)
         
         while self.session and self.session.state != SessionState.CLOSED:
             try:
@@ -153,33 +157,42 @@ class SocketHandler:
                     self.websocket.receive_json(),
                     timeout=1.0
                 )
+                message_count += 1
+                timeout_count = 0  # Reset on successful receive
                 
                 await self._handle_message(message)
                 
                 # Check if we received SESSION_END
                 if message.get("type") == MessageType.SESSION_END:
                     session_end_received = True
+                    print(f"[SocketHandler] SESSION_END received after {message_count} messages", flush=True)
                     break  # Exit message loop, but will wait for video below
                 
             except asyncio.TimeoutError:
+                timeout_count += 1
+                if timeout_count <= 3 or timeout_count % 10 == 0:
+                    print(f"[SocketHandler] Message timeout #{timeout_count} (received {message_count} msgs so far)", flush=True)
                 # If video task is done and we got session_end, exit
                 if session_end_received and self._video_task and self._video_task.done():
                     break
                 continue
                 
             except WebSocketDisconnect:
+                print(f"[SocketHandler] WebSocket disconnected after {message_count} messages", flush=True)
                 raise
+        
+        print(f"[SocketHandler] Message loop ended: {message_count} messages, session_end={session_end_received}", flush=True)
         
         # After SESSION_END, wait for video generation to complete
         if session_end_received and self._video_task and not self._video_task.done():
-            print("[SocketHandler] SESSION_END received, waiting for video generation to complete...")
+            print("[SocketHandler] SESSION_END received, waiting for video generation to complete...", flush=True)
             try:
                 # Wait for video task to complete (with timeout)
                 await asyncio.wait_for(self._video_task, timeout=180.0)
             except asyncio.TimeoutError:
-                print("[SocketHandler] Video generation timed out after 180s")
+                print("[SocketHandler] Video generation timed out after 180s", flush=True)
             except Exception as e:
-                print(f"[SocketHandler] Error waiting for video: {e}")
+                print(f"[SocketHandler] Error waiting for video: {e}", flush=True)
                 
     async def _handle_message(self, message: dict):
         """Route incoming message to appropriate handler."""
