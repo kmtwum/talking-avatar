@@ -260,6 +260,7 @@ class SocketStreamingSDK(StreamingSDK):
                     
                     for i in range(start_idx, len(audio), chunk_size[1] * 640):
                         if self.stop_event.is_set():
+                            print(f"[SocketSDK] Stop event triggered at chunk {processed_chunks}", flush=True)
                             break
                             
                         audio_chunk = audio[i:i + split_len]
@@ -271,26 +272,38 @@ class SocketStreamingSDK(StreamingSDK):
                             )
                         
                         processed_chunks += 1
+                        if processed_chunks == 1:
+                            print(f"[SocketSDK] Processing first audio chunk", flush=True)
+                        elif processed_chunks % 20 == 0:
+                            print(f"[SocketSDK] Processed {processed_chunks} audio chunks", flush=True)
+                        
                         self.run_chunk(audio_chunk, chunk_size)
                 
                 # Check if we're done
                 if self._audio_complete.is_set():
                     # Process any remaining audio
-                    if processed_chunks * chunk_size[1] * 640 >= len(self._total_audio or []):
+                    total_samples = len(self._total_audio or [])
+                    processed_samples = processed_chunks * chunk_size[1] * 640
+                    print(f"[SocketSDK] Audio complete check: processed={processed_samples}, total={total_samples}", flush=True)
+                    if processed_samples >= total_samples:
+                        print(f"[SocketSDK] All audio processed, exiting generation loop", flush=True)
                         break
                 else:
                     # Wait for more audio
                     time.sleep(0.1)
             
-            print(f"[SocketSDK] Finished processing {processed_chunks} chunks")
+            print(f"[SocketSDK] Finished processing {processed_chunks} chunks", flush=True)
             
             # Signal end of audio
             self.audio2motion_queue.put(None)
+            print("[SocketSDK] Signaled end of audio to motion queue", flush=True)
             
         except Exception as e:
-            print(f"[SocketSDK] Error in progressive generation: {e}")
+            print(f"[SocketSDK] Error in progressive generation: {e}", flush=True)
             import traceback
             traceback.print_exc()
+            import sys
+            sys.stdout.flush()
             self.worker_exception = e
             self.stop_event.set()
 

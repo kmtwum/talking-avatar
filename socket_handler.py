@@ -274,15 +274,15 @@ class SocketHandler:
         """
         try:
             # Wait for pre-buffer threshold before starting video
-            print("[SocketHandler] Waiting for audio pre-buffer...")
+            print("[SocketHandler] Waiting for audio pre-buffer...", flush=True)
             prebuffer_met = await self.session.wait_for_prebuffer()
             
             if prebuffer_met:
                 print(f"[SocketHandler] Pre-buffer threshold met, starting video stream "
                       f"({self.session.audio_segments_buffered} segments, "
-                      f"{self.session.audio_duration_buffered:.2f}s)")
+                      f"{self.session.audio_duration_buffered:.2f}s)", flush=True)
             else:
-                print("[SocketHandler] Pre-buffer timeout, starting video stream anyway")
+                print("[SocketHandler] Pre-buffer timeout, starting video stream anyway", flush=True)
             
             # Stream video segments
             segment_count = 0
@@ -292,14 +292,14 @@ class SocketHandler:
                 segment_count += 1
                 
                 if segment_count == 1:
-                    print(f"[SocketHandler] Sent init segment ({len(segment)} bytes)")
+                    print(f"[SocketHandler] Sent init segment ({len(segment)} bytes)", flush=True)
                 elif segment_count % 10 == 0:
-                    print(f"[SocketHandler] Sent {segment_count} segments")
+                    print(f"[SocketHandler] Sent {segment_count} segments", flush=True)
                     
-            print(f"[SocketHandler] Video streaming complete: {segment_count} segments")
+            print(f"[SocketHandler] Video streaming complete: {segment_count} segments", flush=True)
             
             # Send completion message
-            print("[SocketHandler] Sending SESSION_COMPLETE...")
+            print("[SocketHandler] Sending SESSION_COMPLETE...", flush=True)
             self.session.complete()
             await self._send_json({
                 "type": MessageType.SESSION_COMPLETE,
@@ -308,14 +308,16 @@ class SocketHandler:
                 "frames_generated": self.session.frames_generated,
                 "audio_buffered_seconds": round(self.session.audio_duration_buffered, 2)
             })
-            print("[SocketHandler] SESSION_COMPLETE sent successfully")
+            print("[SocketHandler] SESSION_COMPLETE sent successfully", flush=True)
             
         except asyncio.CancelledError:
-            print("[SocketHandler] Video streaming cancelled")
+            print("[SocketHandler] Video streaming cancelled", flush=True)
         except Exception as e:
-            print(f"[SocketHandler] Video stream error: {e}")
+            print(f"[SocketHandler] Video stream error: {e}", flush=True)
             import traceback
             traceback.print_exc()
+            import sys
+            sys.stdout.flush()
             self.session.set_error(e)
             await self._send_error(str(e), "VIDEO_ERROR")
             
