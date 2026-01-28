@@ -133,17 +133,15 @@ class SocketStreamingSDK(StreamingSDK):
             raise RuntimeError("No audio segments received")
             
         first_segment = self._audio_segments[0]
-        print(f"[SocketSDK] First audio received at {time.time() - start_time:.3f}s", flush=True)
+        print(f"[SocketSDK] First audio received at {time.time() - start_time:.3f}s")
         
-        # Setup fMP4 writer WITHOUT audio for true progressive streaming
-        # Audio would limit video duration to initial audio length, breaking streaming
-        # Client should handle audio separately (e.g., via separate audio stream or TTS API)
-        self._setup_streaming_writer(audio_path=None)
+        # Setup fMP4 writer with first audio for timing info
+        # Note: We'll use a combined audio file later for proper muxing
+        temp_audio = self._create_temp_combined_audio()
+        self._setup_streaming_writer(temp_audio)
         
-        # Calculate initial frame count based on first audio segment
-        # We'll generate more frames as more audio arrives
+        # Calculate initial frame count
         initial_frames = self._calculate_frame_count()
-        print(f"[SocketSDK] Initial frame count: {initial_frames} (audio: {len(self._total_audio) if self._total_audio is not None else 0} samples)", flush=True)
         self.setup_Nd(N_d=initial_frames)
         
         # Start generation in background thread
