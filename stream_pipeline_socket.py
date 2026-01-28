@@ -304,7 +304,7 @@ class SocketStreamingSDK(StreamingSDK):
                 # Check if we're done
                 if self._audio_complete.is_set():
                     # Process any remaining audio
-                    total_samples = len(self._total_audio or [])
+                    total_samples = len(self._total_audio) if self._total_audio is not None else 0
                     processed_samples = processed_chunks * chunk_size[1] * 640
                     print(f"[SocketSDK] Audio complete check: processed={processed_samples}, total={total_samples}", flush=True)
                     if processed_samples >= total_samples:
