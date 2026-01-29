@@ -407,9 +407,43 @@ class SocketStreamingSDK(StreamingSDK):
             
             print(f"[SocketSDK] Progressive generation complete: {processed_chunks} chunks, {frames_generated} frames", flush=True)
             
-            # Signal end of audio to motion queue
+            # Signal end of audio to motion queue - this starts the pipeline shutdown
             self.audio2motion_queue.put(None)
             print("[SocketSDK] Signaled end of audio to motion queue", flush=True)
+            
+            # CRITICAL: Wait for pipeline to flush before signaling completion
+            # The None signal propagates: audio2motion -> motion_stitch -> warp -> decode -> putback -> writer
+            # We need to wait for all frames to reach the fMP4 writer
+            print("[SocketSDK] Waiting for pipeline to flush...", flush=True)
+            flush_timeout = 30.0  # Max time to wait for pipeline
+            import time as time_module
+            flush_start = time_module.time()
+            
+            # Wait for writer_queue to drain (indicates frames have been written)
+            while time_module.time() - flush_start < flush_timeout:
+                try:
+                    # Check if writer_queue is empty and writer has processed frames
+                    if hasattr(self, 'writer_queue') and self.writer_queue.empty():
+                        # Give a bit more time for final frame processing
+                        time_module.sleep(0.5)
+                        if self.writer_queue.empty():
+                            print("[SocketSDK] Writer queue drained", flush=True)
+                            break
+                    time_module.sleep(0.1)
+                except:
+                    break
+            
+            # Also close FFmpeg stdin to signal end of video input
+            if self._fmp4_writer and self._fmp4_writer._process:
+                try:
+                    print("[SocketSDK] Closing FFmpeg stdin to flush output", flush=True)
+                    self._fmp4_writer._process.stdin.close()
+                except Exception as e:
+                    print(f"[SocketSDK] Error closing FFmpeg stdin: {e}", flush=True)
+            
+            # Small delay to let FFmpeg flush its output buffer
+            time_module.sleep(0.5)
+            print(f"[SocketSDK] Pipeline flushed after {time_module.time() - flush_start:.2f}s", flush=True)
             
         except Exception as e:
             print(f"[SocketSDK] Error in progressive generation: {e}", flush=True)
@@ -420,7 +454,7 @@ class SocketStreamingSDK(StreamingSDK):
             self.worker_exception = e
             self.stop_event.set()
         finally:
-            # Always signal generation complete so segment iteration can exit
+            # Signal generation complete AFTER pipeline has flushed
             self._generation_complete.set()
             print("[SocketSDK] Generation complete event set", flush=True)
 
