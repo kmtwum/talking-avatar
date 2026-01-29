@@ -37,6 +37,9 @@ class SocketStreamingSDK(StreamingSDK):
     Instead of requiring all audio upfront, this SDK accepts audio
     segments as they become available, enabling progressive video
     generation alongside TTS processing.
+    
+    Key feature: Video generation starts after first audio segment(s)
+    and automatically extends as more audio arrives from TTS.
     """
     
     def __init__(self, cfg_pkl, data_root, **kwargs):
@@ -45,15 +48,17 @@ class SocketStreamingSDK(StreamingSDK):
         # Audio input queue (receives AudioSegment objects)
         self.audio_input_queue: asyncio.Queue = None
         
-        # Accumulated audio for processing
+        # Accumulated audio for processing (protected by _audio_lock)
         self._audio_segments: List[AudioSegment] = []
         self._total_audio: Optional[np.ndarray] = None
         self._processed_samples = 0
         self._frame_offset = 0
         
-        # Synchronization
+        # Thread synchronization
         self._audio_complete = threading.Event()
+        self._audio_lock = threading.Lock()  # Protects _audio_segments and _total_audio
         self._processing_lock = threading.Lock()
+        self._new_audio_available = threading.Event()  # Signals new audio arrived
         
     def setup_socket_streaming(
         self,
@@ -83,8 +88,8 @@ class SocketStreamingSDK(StreamingSDK):
         """
         Append a new audio segment to the processing queue.
         
-        This allows video generation to continue progressively
-        as more audio becomes available.
+        Thread-safe: Uses lock to protect audio segment list.
+        Video generation will automatically incorporate this new audio.
         
         Args:
             segment: AudioSegment containing path and metadata
@@ -94,14 +99,23 @@ class SocketStreamingSDK(StreamingSDK):
             audio, sr = librosa.core.load(segment.audio_path, sr=16000)
             segment.audio_data = audio
             segment.sample_rate = sr
-            
-        self._audio_segments.append(segment)
         
+        # Thread-safe append
+        with self._audio_lock:
+            self._audio_segments.append(segment)
+            segment_count = len(self._audio_segments)
+        
+        # Signal that new audio is available for processing
+        self._new_audio_available.set()
+        
+        duration_ms = int(len(segment.audio_data) / segment.sample_rate * 1000) if segment.audio_data is not None else 0
         print(f"[SocketSDK] Appended audio segment {segment.seq}: "
-              f"{len(segment.audio_data) if segment.audio_data is not None else 0} samples")
+              f"{len(segment.audio_data) if segment.audio_data is not None else 0} samples "
+              f"({duration_ms}ms), total segments: {segment_count}")
         
         if segment.is_final:
             self._audio_complete.set()
+            print(f"[SocketSDK] Final audio segment received")
             
     async def generate_progressive(self) -> AsyncIterator[bytes]:
         """
@@ -208,21 +222,23 @@ class SocketStreamingSDK(StreamingSDK):
         """
         Create a temporary audio file with all current segments.
         
-        This is updated as more segments arrive.
+        Thread-safe: Uses lock to protect audio segment access.
+        This is called when new segments arrive to extend the audio.
         """
-        if not self._audio_segments:
-            return None
+        with self._audio_lock:
+            if not self._audio_segments:
+                return None
+                
+            # Combine all audio segments
+            audio_arrays = [s.audio_data for s in self._audio_segments if s.audio_data is not None]
             
-        # Combine all audio segments
-        audio_arrays = [s.audio_data for s in self._audio_segments if s.audio_data is not None]
+            if not audio_arrays:
+                return None
+                
+            combined = np.concatenate(audio_arrays)
+            self._total_audio = combined
         
-        if not audio_arrays:
-            return None
-            
-        combined = np.concatenate(audio_arrays)
-        self._total_audio = combined
-        
-        # Save to temp file
+        # Save to temp file (outside lock to minimize contention)
         import soundfile as sf
         temp_path = f"{self._temp_dir}/combined_audio.wav"
         sf.write(temp_path, combined, 16000)
@@ -239,33 +255,43 @@ class SocketStreamingSDK(StreamingSDK):
         """
         Run progressive audio-to-video generation.
         
-        Processes audio in chunks, updating as more segments arrive.
+        Processes audio in chunks, dynamically extending as more segments arrive.
+        Uses event-based waiting to efficiently respond to new audio.
         """
         import time
         
         try:
-            print(f"[SocketSDK] Starting generation thread at {time.time() - start_time:.3f}s")
+            print(f"[SocketSDK] Starting progressive generation thread at {time.time() - start_time:.3f}s")
             
             # Chunk configuration
             chunk_size = (2, 3, 1)
             
-            # Process until all audio is consumed or stopped
+            # Track processing state
             processed_chunks = 0
             last_segment_count = 0
+            frames_generated = 0
             
             while not self.stop_event.is_set():
-                current_segment_count = len(self._audio_segments)
+                # Get current segment count (thread-safe)
+                with self._audio_lock:
+                    current_segment_count = len(self._audio_segments)
                 
                 # Check if we have new audio to process
                 if current_segment_count > last_segment_count:
-                    # Update combined audio
+                    print(f"[SocketSDK] New audio detected: {last_segment_count} -> {current_segment_count} segments")
+                    
+                    # Update combined audio (this uses the lock internally)
                     self._create_temp_combined_audio()
                     last_segment_count = current_segment_count
                     
-                    # Update frame count
+                    # Update frame count target
                     new_frame_count = self._calculate_frame_count()
                     if new_frame_count > self._frame_offset:
+                        print(f"[SocketSDK] Extending frame target: {self._frame_offset} -> {new_frame_count} frames")
                         self.setup_Nd(N_d=new_frame_count)
+                    
+                    # Clear the new audio event (will be set again if more arrives)
+                    self._new_audio_available.clear()
                 
                 # Process available audio
                 if self._total_audio is not None:
@@ -295,28 +321,33 @@ class SocketStreamingSDK(StreamingSDK):
                         
                         processed_chunks += 1
                         if processed_chunks == 1:
-                            print(f"[SocketSDK] Processing first audio chunk", flush=True)
+                            print(f"[SocketSDK] Processing first audio chunk (progressive mode)", flush=True)
                         elif processed_chunks % 20 == 0:
-                            print(f"[SocketSDK] Processed {processed_chunks} audio chunks", flush=True)
+                            print(f"[SocketSDK] Processed {processed_chunks} audio chunks, frames: {frames_generated}", flush=True)
                         
                         self.run_chunk(audio_chunk, chunk_size)
+                        frames_generated += chunk_size[1]  # Track frames
                 
-                # Check if we're done
+                # Check if we're done (all audio received AND processed)
                 if self._audio_complete.is_set():
-                    # Process any remaining audio
                     total_samples = len(self._total_audio) if self._total_audio is not None else 0
                     processed_samples = processed_chunks * chunk_size[1] * 640
-                    print(f"[SocketSDK] Audio complete check: processed={processed_samples}, total={total_samples}", flush=True)
+                    
                     if processed_samples >= total_samples:
-                        print(f"[SocketSDK] All audio processed, exiting generation loop", flush=True)
+                        print(f"[SocketSDK] All audio processed: {processed_samples}/{total_samples} samples, "
+                              f"{frames_generated} frames generated", flush=True)
                         break
+                    else:
+                        # More audio to process, continue without waiting
+                        continue
                 else:
-                    # Wait for more audio
-                    time.sleep(0.1)
+                    # Wait for new audio (event-based, more efficient than polling)
+                    # Short timeout ensures we check stop_event regularly
+                    self._new_audio_available.wait(timeout=0.1)
             
-            print(f"[SocketSDK] Finished processing {processed_chunks} chunks", flush=True)
+            print(f"[SocketSDK] Progressive generation complete: {processed_chunks} chunks, {frames_generated} frames", flush=True)
             
-            # Signal end of audio
+            # Signal end of audio to motion queue
             self.audio2motion_queue.put(None)
             print("[SocketSDK] Signaled end of audio to motion queue", flush=True)
             

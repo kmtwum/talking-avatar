@@ -25,7 +25,13 @@ class SessionState(Enum):
 
 @dataclass
 class SessionConfig:
-    """Configuration for a socket session."""
+    """
+    Configuration for a socket session.
+    
+    Progressive Streaming: Video generation starts after prebuffer threshold
+    is met (prebuffer_min_chunks AND prebuffer_min_seconds), then extends
+    dynamically as more TTS audio arrives.
+    """
     avatar: str = "sunny"
     size: int = 512
     tts_preference: str = "elevenlabs"
@@ -33,17 +39,18 @@ class SessionConfig:
     user_id: Optional[str] = None
     voice_source: Optional[str] = None
     
-    # Chunk aggregation settings
-    aggregate_chunks: bool = True  # Enable chunk aggregation
+    # Chunk aggregation settings (combines small text chunks into sentences)
+    aggregate_chunks: bool = True  # Enable chunk aggregation for better TTS quality
     aggregate_min_chars: int = 30  # Minimum chars before considering flush
     aggregate_max_chars: int = 500  # Force flush at this limit
     aggregate_timeout: float = 1.5  # Flush after N seconds of silence
     
-    # Audio pre-buffering settings
-    prebuffer_enabled: bool = True  # Enable audio pre-buffering
-    prebuffer_min_chunks: int = 1  # Minimum audio chunks before starting video
-    prebuffer_min_seconds: float = 1.0  # Minimum audio duration before starting video
-    prebuffer_timeout: float = 10.0  # Max time to wait for prebuffer (fallback)
+    # Progressive streaming settings
+    # Video starts after BOTH min_chunks AND min_seconds are met
+    prebuffer_enabled: bool = True  # Enable progressive streaming (vs wait for all)
+    prebuffer_min_chunks: int = 1   # Start video after N audio segments ready
+    prebuffer_min_seconds: float = 2.0  # Start video after N seconds of audio buffered
+    prebuffer_timeout: float = 15.0  # Max time to wait for prebuffer (fallback)
     
     @classmethod
     def from_dict(cls, data: dict) -> "SessionConfig":
@@ -57,14 +64,14 @@ class SessionConfig:
             voice_source=data.get("voice_source"),
             # Aggregation settings
             aggregate_chunks=data.get("aggregate_chunks", True),
-            aggregate_min_chars=int(data.get("aggregate_min_chars", 50)),
+            aggregate_min_chars=int(data.get("aggregate_min_chars", 30)),
             aggregate_max_chars=int(data.get("aggregate_max_chars", 500)),
             aggregate_timeout=float(data.get("aggregate_timeout", 1.5)),
-            # Pre-buffer settings
+            # Progressive streaming settings
             prebuffer_enabled=data.get("prebuffer_enabled", True),
             prebuffer_min_chunks=int(data.get("prebuffer_min_chunks", 1)),
-            prebuffer_min_seconds=float(data.get("prebuffer_min_seconds", 1.0)),
-            prebuffer_timeout=float(data.get("prebuffer_timeout", 10.0)),
+            prebuffer_min_seconds=float(data.get("prebuffer_min_seconds", 2.0)),
+            prebuffer_timeout=float(data.get("prebuffer_timeout", 15.0)),
         )
 
 

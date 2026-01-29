@@ -280,22 +280,22 @@ class SocketHandler:
         """
         Stream video segments to the client as they're generated.
         
-        Waits for audio pre-buffer before starting video generation
-        to ensure smooth playback.
+        Uses progressive streaming: starts video after prebuffer threshold
+        (minimum audio duration) and continues extending as more audio arrives.
         
         Sends binary fMP4 segments via WebSocket.
         """
         try:
-            # Wait for ALL audio to be ready before starting video
-            # This ensures FFmpeg has complete audio and won't cut off early
-            print("[SocketHandler] Waiting for all audio to be ready...", flush=True)
+            # Progressive streaming: start after prebuffer threshold, not all audio
+            # This enables video to start while TTS is still generating remaining sentences
+            print("[SocketHandler] Waiting for audio prebuffer threshold...", flush=True)
             try:
-                await asyncio.wait_for(self.session.all_audio_ready.wait(), timeout=120.0)
-                print(f"[SocketHandler] All audio ready, starting video stream "
+                await asyncio.wait_for(self.session.prebuffer_ready.wait(), timeout=30.0)
+                print(f"[SocketHandler] Prebuffer ready, starting progressive video stream "
                       f"({self.session.audio_segments_buffered} segments, "
-                      f"{self.session.audio_duration_buffered:.2f}s)", flush=True)
+                      f"{self.session.audio_duration_buffered:.2f}s buffered)", flush=True)
             except asyncio.TimeoutError:
-                print("[SocketHandler] Timeout waiting for audio, starting anyway", flush=True)
+                print("[SocketHandler] Prebuffer timeout, starting with available audio", flush=True)
             
             # Stream video segments
             segment_count = 0
