@@ -59,6 +59,7 @@ class SocketStreamingSDK(StreamingSDK):
         self._audio_lock = threading.Lock()  # Protects _audio_segments and _total_audio
         self._processing_lock = threading.Lock()
         self._new_audio_available = threading.Event()  # Signals new audio arrived
+        self._generation_complete = threading.Event()  # Signals generation thread finished
         
     def setup_socket_streaming(
         self,
@@ -134,6 +135,9 @@ class SocketStreamingSDK(StreamingSDK):
         if not self._streaming_mode:
             raise RuntimeError("Must call setup_socket_streaming() before generate_progressive()")
         
+        # Reset completion event
+        self._generation_complete.clear()
+        
         # Wait for first audio segment
         print("[SocketSDK] Waiting for first audio segment...")
         
@@ -175,24 +179,38 @@ class SocketStreamingSDK(StreamingSDK):
             raise RuntimeError("Failed to get initialization segment")
         
         # Yield media segments as they become available
-        # NOTE: iter_segments uses blocking queue.get() - we need to run it
-        # in an executor to not block the asyncio event loop
+        # Use longer timeout and check generation_complete flag
         segment_count = 0
         print("[SocketSDK] Starting segment iteration...", flush=True)
         
         loop = asyncio.get_event_loop()
-        segment_iter = self._fmp4_writer.iter_segments(timeout=0.5)  # Short timeout for responsiveness
         
+        # Custom segment iteration that respects generation_complete
         while True:
             try:
-                # Run the blocking next() in a thread pool to not block event loop
+                # Try to get segment with short timeout
                 segment = await loop.run_in_executor(
-                    None,  # Use default executor
-                    lambda: next(segment_iter, None)
+                    None,
+                    lambda: self._get_next_segment(timeout=0.5)
                 )
                 
                 if segment is None:
-                    break
+                    # No segment available - check if generation is done
+                    if self._generation_complete.is_set():
+                        # Drain any remaining segments
+                        while True:
+                            final_segment = await loop.run_in_executor(
+                                None,
+                                lambda: self._get_next_segment(timeout=0.2)
+                            )
+                            if final_segment is None:
+                                break
+                            segment_count += 1
+                            yield final_segment
+                        print(f"[SocketSDK] Generation complete, drained remaining segments", flush=True)
+                        break
+                    # Generation still in progress, keep waiting
+                    continue
                     
                 segment_count += 1
                 if segment_count == 1:
@@ -201,8 +219,6 @@ class SocketStreamingSDK(StreamingSDK):
                     print(f"[SocketSDK] Yielded {segment_count} segments", flush=True)
                 yield segment
                 
-            except StopIteration:
-                break
             except Exception as e:
                 print(f"[SocketSDK] Segment iteration error: {e}", flush=True)
                 break
@@ -250,6 +266,50 @@ class SocketStreamingSDK(StreamingSDK):
         if self._total_audio is None:
             return 0
         return math.ceil(len(self._total_audio) / 16000 * 25)
+    
+    def _get_next_segment(self, timeout: float = 0.5) -> Optional[bytes]:
+        """
+        Get next complete media segment (moof+mdat) from queue.
+        
+        Returns None if no segment available within timeout.
+        """
+        import queue as q
+        
+        moof_data = None
+        
+        # Try to get moof + mdat pair
+        try:
+            item = self._fmp4_writer._output_queue.get(timeout=timeout)
+            if item is None:
+                return None
+            
+            segment_type, data = item
+            if segment_type == 'init':
+                # Skip init, try again
+                return self._get_next_segment(timeout=0.1)
+            
+            # Check box type
+            if len(data) >= 8:
+                from core.atomic_components.fmp4_writer import BOX_MOOF, BOX_MDAT
+                box_type = data[4:8]
+                if box_type == BOX_MOOF:
+                    moof_data = data
+                    # Get mdat
+                    try:
+                        item2 = self._fmp4_writer._output_queue.get(timeout=0.5)
+                        if item2 and item2[0] == 'media':
+                            mdat_data = item2[1]
+                            if len(mdat_data) >= 8 and mdat_data[4:8] == BOX_MDAT:
+                                return moof_data + mdat_data
+                    except q.Empty:
+                        pass
+                elif box_type == BOX_MDAT and moof_data:
+                    return moof_data + data
+                    
+        except q.Empty:
+            return None
+        
+        return None
         
     def _run_progressive_generation(self, start_time: float):
         """
@@ -359,6 +419,10 @@ class SocketStreamingSDK(StreamingSDK):
             sys.stdout.flush()
             self.worker_exception = e
             self.stop_event.set()
+        finally:
+            # Always signal generation complete so segment iteration can exit
+            self._generation_complete.set()
+            print("[SocketSDK] Generation complete event set", flush=True)
 
 
 class SocketVideoGenerator:
