@@ -91,6 +91,9 @@ def generate_tts(text: str, tts_preference: str = "coqui", tts_voice_id: str = N
             output_format="mp3_22050_32",
             text=text,
             model_id="eleven_turbo_v2_5",
+            voice_settings={
+                "stability": 0.7
+            }
         )
 
         print("Saving 11 audio file...")
