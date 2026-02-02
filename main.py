@@ -176,6 +176,9 @@ async def quick_generate(
     """Optimized endpoint for fast generation"""
 
     img_path = f"/app/user_img/{avatar}.jpg"
+    if not os.path.exists(img_path):
+        img_path = "/app/img/avatar_chest.jpg"
+
     request_id = str(uuid.uuid4())[:8]
 
     # Use provided audio or generate TTS
