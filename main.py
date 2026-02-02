@@ -177,7 +177,7 @@ async def quick_generate(
 
     img_path = f"/app/user_img/{avatar}.jpg"
     if not os.path.exists(img_path):
-        img_path = "/app/img/avatar_chest.jpg"
+        img_path = "/app/user_img/jamal.jpg"
 
     request_id = str(uuid.uuid4())[:8]
 
