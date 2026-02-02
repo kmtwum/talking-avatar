@@ -8,6 +8,7 @@ Handles:
 """
 
 import asyncio
+import os
 import uuid
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
@@ -331,7 +332,10 @@ class SocketSession:
     
     def get_image_path(self) -> str:
         """Get the source image path for this session's avatar."""
-        return f"/app/user_img/{self.config.avatar}.jpg"
+        img_path = f"/app/user_img/{self.config.avatar}.jpg"
+        if not os.path.exists(img_path):
+            img_path = "/app/user_img/jamal.jpg"
+        return img_path
 
 
 class SessionManager:
