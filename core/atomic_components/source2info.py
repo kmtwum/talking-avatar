@@ -151,5 +151,6 @@ class Source2Info:
             "eye_open": eye_open,   # [1, 2]
             "eye_ball": eye_ball,    # [1, 6]
             "lmk203": lmk203,  # for track
+            "img_crop_512": img_crop,  # 512x512 cropped source for color matching
         }
         return source_info

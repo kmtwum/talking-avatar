@@ -179,6 +179,10 @@ class StreamSDK:
 
         self.source_info = source_info
         self.source_info_frames = len(source_info["x_s_info_lst"])
+        
+        # Set reference crop for color matching (use first frame's crop as stable reference)
+        if "img_crop_512_lst" in source_info and len(source_info["img_crop_512_lst"]) > 0:
+            self.putback.set_reference_crop(source_info["img_crop_512_lst"][0])
 
         # ======== Setup Condition Handler ========
         self.condition_handler.setup(source_info, self.emo, eye_f0_mode=self.eye_f0_mode, ch_info=self.ch_info)

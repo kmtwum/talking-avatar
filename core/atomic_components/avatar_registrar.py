@@ -79,8 +79,9 @@ class AvatarRegistrar:
             "M_c2o_lst": [],
             "eye_open_lst": [],
             "eye_ball_lst": [],
+            "img_crop_512_lst": [],  # Cropped source images for color matching
         }
-        keys = ["x_s_info", "f_s", "M_c2o", "eye_open", "eye_ball"]
+        keys = ["x_s_info", "f_s", "M_c2o", "eye_open", "eye_ball", "img_crop_512"]
         last_lmk = None
         for rgb in rgb_list:
             info = self.source2info(rgb, last_lmk, **kwargs)
