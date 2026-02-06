@@ -37,7 +37,7 @@ class GatewayConfig:
     # Avatar session settings
     avatar: str = "sunny"
     size: int = 512
-    tts_preference: str = "elevenlabs"  # or "elevenlabs"
+    tts_preference: str = "elevenlabs"  # or "coqui"
     voice_id: Optional[str] = None
     
     # Aggregation (gateway-side sentence buffering)
@@ -642,6 +642,7 @@ def create_gateway_app():
                 avatar=avatar,
                 size=message.get("size", 256),
                 voice_id=message.get("voice_id"),
+                tts_preference=message.get("tts_preference"),
             )
             
             # Stream response

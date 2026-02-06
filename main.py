@@ -66,6 +66,7 @@ def generate_tts(text: str, tts_preference: str = "coqui", tts_voice_id: str = N
             "split_sentences": False,
             "source_aud": voice_source,
             "clone": user_id,
+            "speed": 1.2,
             "streaming": False,
             "model": "tts_models/multilingual/multi-dataset/xtts_v2"
         })
