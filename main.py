@@ -180,6 +180,8 @@ async def quick_generate(
     if not os.path.exists(img_path):
         img_path = "/app/user_img/jamal.jpg"
 
+    print(f"Using img_path: {img_path}")
+
     request_id = str(uuid.uuid4())[:8]
 
     # Use provided audio or generate TTS
