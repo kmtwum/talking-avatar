@@ -66,6 +66,7 @@ class SessionConfig:
             prebuffer_min_chunks=int(data.get("prebuffer_min_chunks", 1)),
             prebuffer_min_seconds=float(data.get("prebuffer_min_seconds", 1.0)),
             prebuffer_timeout=float(data.get("prebuffer_timeout", 10.0)),
+            watermark=data.get("watermark", False),
         )
 
 
