@@ -48,6 +48,7 @@ class SessionConfig:
     
     # Watermark settings
     watermark: bool = False  # Enable watermark overlay on generated video
+    watermark_position: str = "bottom-right"  # bottom-right, bottom-left, top-right, top-left
     
     @classmethod
     def from_dict(cls, data: dict) -> "SessionConfig":
@@ -70,6 +71,7 @@ class SessionConfig:
             prebuffer_min_seconds=float(data.get("prebuffer_min_seconds", 1.0)),
             prebuffer_timeout=float(data.get("prebuffer_timeout", 10.0)),
             watermark=data.get("watermark", False),
+            watermark_position=data.get("watermark_position", "bottom-right"),
         )
 
 

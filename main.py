@@ -173,7 +173,8 @@ async def quick_generate(
         source_img: str = Form(None),
         source_aud: str = Form(None),
         audio: UploadFile = File(None),
-        watermark: bool = Form(False)
+        watermark: bool = Form(False),
+        watermark_position: str = Form("bottom-right")
 ):
     """Optimized endpoint for fast generation"""
 
@@ -211,6 +212,7 @@ async def quick_generate(
     ]
     if watermark:
         cmd.append("--watermark")
+        cmd.extend(["--watermark_position", watermark_position])
 
     process = await asyncio.create_subprocess_exec(*cmd)
     await process.wait()
@@ -306,7 +308,8 @@ async def generate_stream(
     source_img: str = Form(None),
     source_aud: str = Form(None),
     audio: UploadFile = File(None),
-    watermark: bool = Form(False)
+    watermark: bool = Form(False),
+    watermark_position: str = Form("bottom-right")
 ):
     """
     Stream fMP4 chunks for real-time playback via MediaSource Extensions.
@@ -367,6 +370,7 @@ async def generate_stream(
                 width=int(size),
                 height=int(size),
                 watermark=watermark,
+                watermark_position=watermark_position,
             )
             
             print(f"[ENDPOINT] Starting chunk generation at {time.time() - start_time:.3f}s")

@@ -346,11 +346,13 @@ class SocketVideoGenerator:
         cfg_pkl: str = None,
         data_root: str = None,
         watermark: bool = False,
+        watermark_position: str = "bottom-right",
     ):
         self.source_path = source_path
         self.width = width
         self.height = height
         self.watermark = watermark
+        self.watermark_position = watermark_position
         
         # Use defaults if not provided
         self.cfg_pkl = cfg_pkl or "/app/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_online.pkl"
@@ -369,6 +371,7 @@ class SocketVideoGenerator:
             width=self.width,
             height=self.height,
             watermark=self.watermark,
+            watermark_position=self.watermark_position,
         )
         
     async def add_audio(self, seq: int, audio_path: str, is_final: bool = False):

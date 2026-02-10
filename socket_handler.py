@@ -133,6 +133,7 @@ class SocketHandler:
             width=self.session.config.size,
             height=self.session.config.size,
             watermark=self.session.config.watermark,
+            watermark_position=self.session.config.watermark_position,
         )
         await self.video_generator.initialize()
         

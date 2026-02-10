@@ -226,9 +226,13 @@ class StreamSDK:
         if watermark_enabled:
             watermark_path = kwargs.get("watermark_path", DEFAULT_WATERMARK_PATH)
             watermark_opts = kwargs.get("watermark_opts", {})
+            # Allow per-request position override
+            watermark_position = kwargs.get("watermark_position")
+            if watermark_position:
+                watermark_opts["position"] = watermark_position
             try:
                 self._watermark = WatermarkOverlay(logo_path=watermark_path, **watermark_opts)
-                print(f"[SDK] Watermark enabled: {watermark_path}")
+                print(f"[SDK] Watermark enabled: {watermark_path} (position={self._watermark._position})")
             except (FileNotFoundError, ValueError) as e:
                 print(f"[SDK] Watermark disabled — {e}")
                 self._watermark = None
