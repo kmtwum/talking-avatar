@@ -35,9 +35,9 @@ class WatermarkOverlay:
         self,
         logo_path: str = DEFAULT_WATERMARK_PATH,
         position: str = "bottom-right",
-        scale: float = 0.15,
+        scale: float = 0.3,
         opacity: float = 0.6,
-        margin: int = 10,
+        margin: int = 20,
     ):
         if not os.path.exists(logo_path):
             raise FileNotFoundError(f"Watermark logo not found: {logo_path}")
