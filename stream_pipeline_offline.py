@@ -11,6 +11,7 @@ from core.atomic_components.motion_stitch import MotionStitch
 from core.atomic_components.warp_f3d import WarpF3D
 from core.atomic_components.decode_f3d import DecodeF3D
 from core.atomic_components.putback import PutBack
+from core.atomic_components.watermark import WatermarkOverlay, DEFAULT_WATERMARK_PATH
 from core.atomic_components.writer import VideoWriterByImageIO
 from core.atomic_components.wav2feat import Wav2Feat
 from core.atomic_components.cfg import parse_cfg, print_cfg
@@ -198,6 +199,23 @@ class StreamSDK:
             overall_ctrl_info=self.overall_ctrl_info,
         )
 
+        # ======== Watermark ========
+        watermark_enabled = kwargs.get("watermark", False)
+        if watermark_enabled:
+            watermark_path = kwargs.get("watermark_path", DEFAULT_WATERMARK_PATH)
+            watermark_opts = kwargs.get("watermark_opts", {})
+            watermark_position = kwargs.get("watermark_position")
+            if watermark_position:
+                watermark_opts["position"] = watermark_position
+            try:
+                self._watermark = WatermarkOverlay(logo_path=watermark_path, **watermark_opts)
+                print(f"[SDK] Watermark enabled: {watermark_path} (position={self._watermark._position})")
+            except (FileNotFoundError, ValueError) as e:
+                print(f"[SDK] Watermark disabled — {e}")
+                self._watermark = None
+        else:
+            self._watermark = None
+
         # ======== Video Writer ========
         self.output_path = output_path
         self.tmp_output_path = output_path + ".tmp.mp4"
@@ -291,6 +309,8 @@ class StreamSDK:
             frame_rgb = self.source_info["img_rgb_lst"][frame_idx]
             M_c2o = self.source_info["M_c2o_lst"][frame_idx]
             res_frame_rgb = self.putback(frame_rgb, render_img, M_c2o)
+            if self._watermark is not None:
+                res_frame_rgb = self._watermark.apply(res_frame_rgb)
             self.writer_queue.put(res_frame_rgb)
 
     def decode_f3d_worker(self):
