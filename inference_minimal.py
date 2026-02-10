@@ -89,6 +89,7 @@ if __name__ == "__main__":
     parser.add_argument("--steps", type=int, default=25, help="sampling timesteps")
     parser.add_argument("--fast", action="store_true", help="Enable fast mode optimizations")
     parser.add_argument("--size", type=int, default=512, help="video resolution (max_size)")
+    parser.add_argument("--watermark", action="store_true", help="Enable watermark overlay")
     args = parser.parse_args()
 
     # Enable optimizations
@@ -99,6 +100,7 @@ if __name__ == "__main__":
         "setup_kwargs": {
             "sampling_timesteps": args.steps,
             "max_size": args.size,
+            "watermark": args.watermark,
         }
     }
 

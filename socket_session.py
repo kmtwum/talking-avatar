@@ -46,6 +46,9 @@ class SessionConfig:
     prebuffer_min_seconds: float = 1.0  # Minimum audio duration before starting video
     prebuffer_timeout: float = 10.0  # Max time to wait for prebuffer (fallback)
     
+    # Watermark settings
+    watermark: bool = False  # Enable watermark overlay on generated video
+    
     @classmethod
     def from_dict(cls, data: dict) -> "SessionConfig":
         """Create config from dictionary."""
@@ -66,6 +69,7 @@ class SessionConfig:
             prebuffer_min_chunks=int(data.get("prebuffer_min_chunks", 1)),
             prebuffer_min_seconds=float(data.get("prebuffer_min_seconds", 1.0)),
             prebuffer_timeout=float(data.get("prebuffer_timeout", 10.0)),
+            watermark=data.get("watermark", False),
         )
 
 

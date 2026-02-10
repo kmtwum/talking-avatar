@@ -172,7 +172,8 @@ async def quick_generate(
         avatar: Optional[str] = Form("sunny"),
         source_img: str = Form(None),
         source_aud: str = Form(None),
-        audio: UploadFile = File(None)
+        audio: UploadFile = File(None),
+        watermark: bool = Form(False)
 ):
     """Optimized endpoint for fast generation"""
 
@@ -199,7 +200,7 @@ async def quick_generate(
     # Generate video with streaming optimizations
     output_path = f"/tmp/quick_{hash(request_id)}.mp4"
 
-    process = await asyncio.create_subprocess_exec(
+    cmd = [
         "python", f"/app/{inference}.py",
         "--audio_path", audio_path,
         "--source_path", img_path,
@@ -207,7 +208,11 @@ async def quick_generate(
         "--size", size,
         "--steps", "10",
         "--fast",
-    )
+    ]
+    if watermark:
+        cmd.append("--watermark")
+
+    process = await asyncio.create_subprocess_exec(*cmd)
     await process.wait()
 
     # Clean up temp audio
@@ -216,8 +221,8 @@ async def quick_generate(
 
     # Stream response
     def video_stream():
-        with open(output_path, "rb") as f:
-            while chunk := f.read(8192):
+        with open(output_path, "rb") as _f:
+            while chunk := _f.read(8192):
                 yield chunk
 
     return StreamingResponse(video_stream(), media_type="video/mp4")
@@ -300,7 +305,8 @@ async def generate_stream(
     user_id: Optional[str] = Form(None),
     source_img: str = Form(None),
     source_aud: str = Form(None),
-    audio: UploadFile = File(None)
+    audio: UploadFile = File(None),
+    watermark: bool = Form(False)
 ):
     """
     Stream fMP4 chunks for real-time playback via MediaSource Extensions.
@@ -359,7 +365,8 @@ async def generate_stream(
             streaming_sdk.setup_streaming(
                 source_path=img_path,
                 width=int(size),
-                height=int(size)
+                height=int(size),
+                watermark=watermark,
             )
             
             print(f"[ENDPOINT] Starting chunk generation at {time.time() - start_time:.3f}s")

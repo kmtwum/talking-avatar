@@ -131,7 +131,8 @@ class SocketHandler:
         self.video_generator = SocketVideoGenerator(
             source_path=self.session.get_image_path(),
             width=self.session.config.size,
-            height=self.session.config.size
+            height=self.session.config.size,
+            watermark=self.session.config.watermark,
         )
         await self.video_generator.initialize()
         
