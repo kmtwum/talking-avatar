@@ -63,7 +63,7 @@ def generate_tts(text: str, tts_preference: str = "coqui", tts_voice_id: str = N
         tts_url = "http://tts:8000/generate"
         tts_response = requests.post(tts_url, json={
             "text": text,
-            "split_sentences": False,
+            "split_sentences": True,
             "source_aud": voice_source,
             "clone": user_id,
             "speed": 1.2,
