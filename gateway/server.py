@@ -47,10 +47,12 @@ class ChatRequest(BaseModel):
     type: str = "START"
     prompt: str
     avatar: str = "sunny"
+    tts_preference: str = "elevenlabs"
     size: int = 512
     voice_id: Optional[str] = None
     system_prompt: Optional[str] = None
     model: str = "gpt-4.1"
+    protocol: str = "fmp4"  # 'fmp4' or 'hls'
 
 
 @asynccontextmanager
@@ -140,6 +142,7 @@ async def websocket_chat(websocket: WebSocket):
                     avatar=request.avatar,
                     size=request.size,
                     voice_id=request.voice_id,
+                    protocol=request.protocol,
                     # Gateway-side aggregation
                     gateway_aggregate=True,
                     gateway_min_chars=40,

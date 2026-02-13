@@ -27,6 +27,9 @@ class AvatarConfig:
     user_id: Optional[str] = None
     voice_source: Optional[str] = None
     
+    # Protocol: 'fmp4' (default, uses MSE) or 'hls' (iOS-compatible)
+    protocol: str = "fmp4"
+    
     # Avatar-side aggregation settings
     aggregate_chunks: bool = True
     aggregate_min_chars: int = 50
@@ -38,6 +41,17 @@ class AvatarConfig:
     prebuffer_min_chunks: int = 1
     prebuffer_min_seconds: float = 1.0
     prebuffer_timeout: float = 10.0
+    
+    @property
+    def effective_ws_url(self) -> str:
+        """Get the WebSocket URL based on protocol."""
+        if self.protocol == "hls":
+            # Append /hls to the base URL if not already present
+            base = self.avatar_ws_url.rstrip('/')
+            if base.endswith('/ws/generate'):
+                return base + '/hls'
+            return base
+        return self.avatar_ws_url
 
 
 class AvatarSession:
@@ -79,6 +93,10 @@ class AvatarSession:
         self.avatar_ws = None
         self.closed = False
         self.started = False
+        self.protocol = self.config.protocol  # 'fmp4' or 'hls'
+        
+        # HLS state
+        self.hls_playlist_url: Optional[str] = None
         
         # Async queues
         self.sentence_queue: asyncio.Queue = asyncio.Queue()
@@ -108,7 +126,8 @@ class AvatarSession:
             return
             
         self.start_time = time.time()
-        print(f"[AvatarSession {self.session_id}] Connecting to {self.config.avatar_ws_url}")
+        ws_url = self.config.effective_ws_url
+        print(f"[AvatarSession {self.session_id}] Connecting to {ws_url} (protocol={self.protocol})")
         
         try:
             # Add extra headers to bypass potential origin checks from proxies
@@ -117,7 +136,7 @@ class AvatarSession:
             }
             
             self.avatar_ws = await websockets.connect(
-                self.config.avatar_ws_url,
+                ws_url,
                 max_size=10 * 1024 * 1024,  # 10MB max message
                 ping_interval=20,
                 ping_timeout=10,
@@ -203,7 +222,11 @@ class AvatarSession:
         try:
             async for message in self.avatar_ws:
                 if isinstance(message, bytes):
-                    # Binary video chunk
+                    # Binary video chunk (fMP4 mode only)
+                    if self.protocol == "hls":
+                        # HLS mode doesn't send binary chunks - skip
+                        continue
+                    
                     if self.first_video_time is None:
                         self.first_video_time = time.time()
                         latency = self.first_video_time - self.start_time
@@ -232,7 +255,17 @@ class AvatarSession:
         """Handle JSON message from avatar service."""
         msg_type = msg.get("type")
         
-        if msg_type == "SESSION_COMPLETE":
+        if msg_type == "HLS_READY":
+            # HLS mode: forward playlist URL to client
+            self.hls_playlist_url = msg.get("playlist_url")
+            if self.first_video_time is None:
+                self.first_video_time = time.time()
+                latency = self.first_video_time - self.start_time
+                print(f"[AvatarSession {self.session_id}] HLS ready: {latency:.2f}s, "
+                      f"url={self.hls_playlist_url}")
+            await self._forward_json(msg)
+        
+        elif msg_type == "SESSION_COMPLETE":
             print(f"[AvatarSession {self.session_id}] Session complete: "
                   f"duration={msg.get('total_duration_ms')}ms, "
                   f"chunks={msg.get('chunks_processed')}, "

@@ -297,6 +297,123 @@ async def websocket_generate(websocket: WebSocket):
     await handler.handle_connection()
 
 
+# ============================================================================
+# HLS Endpoints - iOS-compatible video streaming
+# ============================================================================
+
+HLS_BASE_DIR = os.getenv("HLS_BASE_DIR", "/tmp/hls_streams")
+os.makedirs(HLS_BASE_DIR, exist_ok=True)
+
+
+@app.websocket("/ws/generate/hls")
+async def websocket_generate_hls(websocket: WebSocket):
+    """
+    WebSocket endpoint for HLS-based speech-to-video generation.
+    
+    Same protocol as /ws/generate but outputs HLS instead of fMP4:
+    
+    Protocol:
+    1. Client connects and sends SESSION_START with config
+    2. Client sends SPEECH_CHUNK messages progressively
+    3. Server sends HLS_READY with playlist URL when stream is available
+    4. Client fetches .m3u8 and .ts segments via HTTP
+    5. Client sends SESSION_END when done sending text
+    6. Server sends SESSION_COMPLETE and closes connection
+    
+    Message Types (Client -> Server):
+        SESSION_START: {"type": "SESSION_START", "avatar": "sunny", "size": 256, ...}
+        SPEECH_CHUNK: {"type": "SPEECH_CHUNK", "seq": 0, "text": "Hello..."}
+        SESSION_END: {"type": "SESSION_END"}
+    
+    Message Types (Server -> Client):
+        SESSION_STARTED: {"type": "SESSION_STARTED", "session_id": "abc123", "protocol": "hls"}
+        HLS_READY: {"type": "HLS_READY", "session_id": "abc123", "playlist_url": "/hls/abc123/stream.m3u8"}
+        STATUS: {"type": "STATUS", "chunks_processed": 3, ...}
+        SESSION_COMPLETE: {"type": "SESSION_COMPLETE", ..., "playlist_url": "..."}
+        ERROR: {"type": "ERROR", "message": "...", "code": "..."}
+    """
+    print(f"[HLS-WS] Connection attempt from: {websocket.client}")
+    print(f"[HLS-WS] Origin: {websocket.headers.get('origin', 'Not provided')}")
+    
+    from hls_socket_handler import HLSSocketHandler
+    
+    # Determine base URL for HLS from request headers
+    host = websocket.headers.get("host", "localhost:8000")
+    scheme = "https" if websocket.headers.get("x-forwarded-proto") == "https" else "http"
+    hls_base_url = f"{scheme}://{host}"
+    
+    handler = HLSSocketHandler(websocket, hls_base_url=hls_base_url)
+    await handler.handle_connection()
+
+
+@app.get("/hls/{session_id}/stream.m3u8")
+async def hls_playlist(session_id: str):
+    """
+    Serve the HLS playlist for a session.
+    
+    Returns the m3u8 playlist file with proper CORS and caching headers.
+    """
+    from fastapi.responses import Response
+    
+    playlist_path = os.path.join(HLS_BASE_DIR, session_id, "stream.m3u8")
+    
+    if not os.path.exists(playlist_path):
+        return JSONResponse(
+            {"error": "Playlist not found", "session_id": session_id},
+            status_code=404
+        )
+    
+    with open(playlist_path, 'r') as f:
+        content = f.read()
+    
+    return Response(
+        content=content,
+        media_type="application/vnd.apple.mpegurl",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
+
+@app.get("/hls/{session_id}/{segment_name}")
+async def hls_segment(session_id: str, segment_name: str):
+    """
+    Serve an HLS .ts segment for a session.
+    
+    Returns the MPEG-TS segment file with proper headers.
+    """
+    from fastapi.responses import Response
+    
+    # Validate segment name to prevent path traversal
+    if ".." in segment_name or "/" in segment_name:
+        return JSONResponse({"error": "Invalid segment name"}, status_code=400)
+    
+    if not segment_name.endswith('.ts'):
+        return JSONResponse({"error": "Invalid segment type"}, status_code=400)
+    
+    segment_path = os.path.join(HLS_BASE_DIR, session_id, segment_name)
+    
+    if not os.path.exists(segment_path):
+        return JSONResponse(
+            {"error": "Segment not found", "segment": segment_name},
+            status_code=404
+        )
+    
+    with open(segment_path, 'rb') as f:
+        content = f.read()
+    
+    return Response(
+        content=content,
+        media_type="video/mp2t",
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            "Access-Control-Allow-Origin": "*",
+        }
+    )
+
+
 @app.post("/generate/stream")
 async def generate_stream(
     text: str = Form(...),

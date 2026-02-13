@@ -40,6 +40,9 @@ class GatewayConfig:
     tts_preference: str = "elevenlabs"  # or "coqui"
     voice_id: Optional[str] = None
     
+    # Protocol: 'fmp4' (default, uses MSE) or 'hls' (iOS-compatible)
+    protocol: str = "fmp4"
+    
     # Aggregation (gateway-side sentence buffering)
     gateway_aggregate: bool = True  # Buffer at gateway level too
     gateway_min_chars: int = 40
@@ -163,7 +166,15 @@ class AvatarSession:
         """Start the avatar session and background tasks."""
         self.start_time = time.time()
         
-        print(f"[Gateway {self.session_id}] Connecting to avatar: {self.config.avatar_ws_url}")
+        print(f"[Gateway {self.session_id}] Connecting to avatar: {self.config.avatar_ws_url} (protocol={self.config.protocol})")
+        
+        # Determine WS URL based on protocol
+        ws_url = self.config.avatar_ws_url
+        if self.config.protocol == "hls":
+            base = ws_url.rstrip('/')
+            if base.endswith('/ws/generate'):
+                ws_url = base + '/hls'
+            print(f"[Gateway {self.session_id}] HLS mode, connecting to: {ws_url}")
         
         try:
             # Extract host from URL for proper headers
@@ -181,7 +192,7 @@ class AvatarSession:
             print(f"[Gateway {self.session_id}] Using headers: {extra_headers}")
             
             self.avatar_ws = await websockets.connect(
-                self.config.avatar_ws_url,
+                ws_url,
                 max_size=10 * 1024 * 1024,  # 10MB max message
                 ping_interval=20,
                 ping_timeout=10
@@ -259,7 +270,9 @@ class AvatarSession:
         try:
             async for message in self.avatar_ws:
                 if isinstance(message, bytes):
-                    # Binary video chunk
+                    # Binary video chunk (fMP4 mode only)
+                    if self.config.protocol == "hls":
+                        continue  # HLS mode doesn't send binary chunks
                     try:
                         self.video_queue.put_nowait(message)
                         self.video_chunks_received += 1
@@ -271,7 +284,12 @@ class AvatarSession:
                     msg = json.loads(message)
                     msg_type = msg.get("type")
                     
-                    if msg_type == "SESSION_COMPLETE":
+                    if msg_type == "HLS_READY":
+                        # HLS mode: forward playlist URL to client
+                        print(f"[Gateway {self.session_id}] HLS ready: {msg.get('playlist_url')}")
+                        await self._forward_to_client_json(msg)
+                    
+                    elif msg_type == "SESSION_COMPLETE":
                         print(f"[Gateway {self.session_id}] Avatar session complete: {msg}")
                         # Forward to client
                         await self._forward_to_client_json(msg)
