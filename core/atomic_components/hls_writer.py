@@ -137,7 +137,11 @@ class HLSStreamWriter:
             '-f', 'hls',
             '-hls_time', str(self.segment_duration),
             '-hls_list_size', '0',  # Keep all segments in playlist
-            '-hls_flags', 'independent_segments+append_list',
+            # omit_endlist: critical for live-style streaming — without it,
+            # FFmpeg writes #EXT-X-ENDLIST after each segment update, causing
+            # Safari to treat 1-segment playlists as complete VODs.
+            # We manually append #EXT-X-ENDLIST in finalize() instead.
+            '-hls_flags', 'independent_segments+append_list+omit_endlist',
             '-hls_segment_type', 'mpegts',
             '-hls_segment_filename', self.segment_pattern,
             self.playlist_path,
@@ -323,10 +327,12 @@ class HLSStreamWriter:
             
     def finalize(self):
         """
-        Finalize the stream - close FFmpeg stdin and wait for completion.
+        Finalize the stream - close FFmpeg stdin, wait for completion,
+        then manually append #EXT-X-ENDLIST to the playlist.
         
-        This causes FFmpeg to finish writing any remaining segments and
-        add the #EXT-X-ENDLIST tag to the playlist.
+        We use omit_endlist in FFmpeg flags so the playlist looks like a
+        live stream during generation. Once FFmpeg exits, we append
+        #EXT-X-ENDLIST so players know the stream is complete.
         """
         if self._finalized:
             return
@@ -353,6 +359,16 @@ class HLSStreamWriter:
             except subprocess.TimeoutExpired:
                 print(f"[HLS] FFmpeg process timed out, killing")
                 self._process.kill()
+        
+        # Manually append #EXT-X-ENDLIST to the playlist
+        # (omit_endlist flag prevents FFmpeg from writing it)
+        if os.path.exists(self.playlist_path):
+            try:
+                with open(self.playlist_path, 'a') as f:
+                    f.write('#EXT-X-ENDLIST\n')
+                print(f"[HLS] Appended #EXT-X-ENDLIST to playlist")
+            except Exception as e:
+                print(f"[HLS] Error appending ENDLIST: {e}")
         
         # Signal watcher that stream is complete
         self._stream_complete.set()
