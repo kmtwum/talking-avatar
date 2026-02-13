@@ -1,0 +1,380 @@
+<audio id="audioElement" controls></audio>
+<video id="videoElement" controls playsinline></video>
+<label for="promptInput">Prompt</label>
+<input type="text" id="promptInput" placeholder="Enter text to speak..."
+    value="share brief details about your background">
+<label for="res_mode">Response Mode</label>
+<select name="res_mode" id="res_mode">
+    <option value="text">Text</option>
+    <option value="voice">Voice</option>
+    <option value="video" selected>Video</option>
+</select>
+<label for="convo_mode">Conversation Mode</label>
+<select name="convo_mode" id="convo_mode">
+    <option value="public_to_clone">Public to clone</option>
+    <option value="public_to_platform">Public to platform</option>
+    <option value="user_to_platform">User to platform</option>
+    <option value="user_to_clone" selected>User to clone</option>
+</select>
+<input type="file" name="file" id="file-input">
+<button id="sendButton">Send</button>
+<div id="statusLog" style="margin-top:8px; font-family:monospace; font-size:12px; color:#666;"></div>
+
+<!-- hls.js for non-Safari browsers -->
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+
+<script>
+    const audioElement = document.getElementById('audioElement');
+    const videoElement = document.getElementById('videoElement');
+    const promptInput = document.getElementById('promptInput');
+    const resModeSelect = document.getElementById('res_mode');
+    const convoModeSelect = document.getElementById('convo_mode');
+    const fileInput = document.getElementById('file-input');
+    const sendButton = document.getElementById('sendButton');
+    const statusLog = document.getElementById('statusLog');
+
+    let audioChunks = [];
+    let session_id = '';
+    let socket;
+    let mediaSource = null;
+    let audioNode = null;
+    let sourceBuffer = null;
+    let pendingChunks = [];
+    let hasStartedPlayback = false;
+    let isPlaying = false;
+    let audioContext = null;
+    let nextStartTime = 0;
+    let headerReceived = false;
+    let targetSampleRate = 24000;
+    let channelCount = 1;
+
+    // HLS player instance (hls.js)
+    let hlsPlayer = null;
+
+    function log(msg) {
+        console.log(msg);
+        statusLog.textContent = msg;
+    }
+
+    function connect() {
+        const socketUrl = `ws://localhost:8001/ws/chat`;
+        socket = new WebSocket(socketUrl);
+
+        socket.addEventListener('open', (event) => {
+            log('Connected to voice server');
+        });
+
+        socket.addEventListener('message', async (event) => {
+            const response_mode = resModeSelect.value;
+            if (event.data instanceof Blob) {
+                if (response_mode === 'voice') {
+                    console.log('Received audio chunk');
+                    await playAudioChunk(event.data);
+                }
+                // In HLS mode we do NOT receive binary video chunks —
+                // video is fetched over HTTP via the HLS playlist.
+                // If the server still sends binary data in non-HLS mode,
+                // this block is intentionally left out for video.
+            } else {
+                const message = JSON.parse(await event.data);
+                console.log('Status message:', message);
+
+                // ── HLS: server tells us the playlist URL is ready ──
+                if (message.type === 'HLS_READY') {
+                    const playlistUrl = message.playlist_url;
+                    log(`HLS ready: ${playlistUrl}`);
+                    startHLSPlayback(playlistUrl);
+                    return;
+                }
+
+                // Handle init message with chunk_duration for video streaming
+                if (message.type === 'init' && message.chunk_duration) {
+                    console.log('Video chunk duration:', message.chunk_duration);
+                    return;
+                }
+
+                if (message.type === 'SESSION_COMPLETE' || message.status === 'stream_complete') {
+                    log('Stream finished');
+                    session_id = message.session_id || session_id;
+
+                    if (response_mode === 'voice' && sourceBuffer && !sourceBuffer.updating && mediaSource && mediaSource.readyState === 'open') {
+                        try {
+                            mediaSource.endOfStream();
+                        } catch (e) { }
+                    }
+                    // HLS: nothing to do — the player handles end-of-stream
+                    // when it sees #EXT-X-ENDLIST in the playlist.
+                } else if (message.error) {
+                    console.error('Error from server:', message.error);
+                    log(`Error: ${message.error}`);
+                }
+            }
+        });
+
+        socket.addEventListener('error', (error) => {
+            console.error('WebSocket error:', error);
+            socket.close();
+        });
+
+        socket.addEventListener('close', (event) => {
+            log('WebSocket closed. Reconnecting in 1s...');
+            setTimeout(connect, 1000);
+        });
+    }
+
+    sendButton.addEventListener('click', async () => {
+        headerReceived = false;
+        nextStartTime = 0;
+        targetSampleRate = 24000;
+        const prompt = promptInput.value.trim();
+        const response_mode = resModeSelect.value;
+        const conversation_mode = convoModeSelect.value;
+        const file = fileInput.files[0];
+        if (prompt) {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                console.error('WebSocket is not connected.');
+                return;
+            }
+            if (response_mode === 'voice') {
+                audioChunks = [];
+                pendingChunks = [];
+                isPlaying = false;
+                initInstantMp3Player();
+                await ensureAudioContext();
+            } else if (response_mode === 'video') {
+                // Clean up any previous HLS player
+                destroyHLSPlayer();
+                log('Waiting for HLS stream...');
+            }
+
+            // Send START message — include protocol: 'hls' for video mode
+            socket.send(JSON.stringify({
+                prompt,
+                response_mode,
+                conversation_mode,
+                user_id: '2abb3b63-03b5-4a2e-bf2a-7800e761a679',
+                session_id,
+                protocol: response_mode === 'video' ? 'hls' : 'fmp4',
+                ...(file && {
+                    has_file: true,
+                    file_name: file.name,
+                    file_type: file.type,
+                    file_size: file.size
+                })
+            }));
+            await new Promise(resolve => setTimeout(resolve, 100));
+            if (file) {
+                const arrayBuffer = await file.arrayBuffer();
+                socket.send(arrayBuffer);
+            }
+        }
+
+        headerReceived = false;
+        nextStartTime = 0;
+    });
+
+    // ────────────────────────────────────────────────────────
+    //  HLS Playback (replaces MediaSource Extensions approach)
+    // ────────────────────────────────────────────────────────
+
+    /**
+     * Start HLS playback on the <video> element.
+     *
+     * iOS Safari has native HLS support — we just set video.src.
+     * All other browsers use hls.js as a polyfill.
+     */
+    function startHLSPlayback(playlistUrl) {
+        destroyHLSPlayer();
+
+        if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
+            // ── Native HLS (Safari / iOS) ──
+            log('Using native HLS playback');
+            videoElement.src = playlistUrl;
+            videoElement.addEventListener('loadedmetadata', () => {
+                videoElement.play().catch(e => console.warn('Autoplay blocked:', e));
+            }, { once: true });
+        } else if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+            // ── hls.js polyfill (Chrome, Firefox, etc.) ──
+            log('Using hls.js playback');
+            hlsPlayer = new Hls({
+                // Low-latency tuning: poll the playlist frequently
+                // since segments are being written as they generate
+                liveSyncDurationCount: 1,
+                liveMaxLatencyDurationCount: 3,
+                manifestLoadingTimeOut: 30000,
+                manifestLoadingMaxRetry: 10,
+                manifestLoadingRetryDelay: 1000,
+                levelLoadingTimeOut: 30000,
+                levelLoadingMaxRetry: 10,
+                levelLoadingRetryDelay: 1000,
+            });
+
+            hlsPlayer.loadSource(playlistUrl);
+            hlsPlayer.attachMedia(videoElement);
+
+            hlsPlayer.on(Hls.Events.MANIFEST_PARSED, () => {
+                log('HLS manifest loaded — starting playback');
+                videoElement.play().catch(e => console.warn('Autoplay blocked:', e));
+            });
+
+            hlsPlayer.on(Hls.Events.ERROR, (event, data) => {
+                if (data.fatal) {
+                    console.error('Fatal HLS error:', data.type, data.details);
+                    log(`HLS error: ${data.details}`);
+                    switch (data.type) {
+                        case Hls.ErrorTypes.NETWORK_ERROR:
+                            log('Network error — retrying...');
+                            hlsPlayer.startLoad();
+                            break;
+                        case Hls.ErrorTypes.MEDIA_ERROR:
+                            log('Media error — recovering...');
+                            hlsPlayer.recoverMediaError();
+                            break;
+                        default:
+                            log('Unrecoverable HLS error');
+                            destroyHLSPlayer();
+                            break;
+                    }
+                } else {
+                    console.warn('Non-fatal HLS error:', data.details);
+                }
+            });
+        } else {
+            log('ERROR: This browser supports neither native HLS nor MediaSource Extensions.');
+            console.error('No HLS playback method available');
+        }
+    }
+
+    /**
+     * Tear down the current HLS player, if any.
+     */
+    function destroyHLSPlayer() {
+        if (hlsPlayer) {
+            hlsPlayer.destroy();
+            hlsPlayer = null;
+        }
+        videoElement.removeAttribute('src');
+        videoElement.load();  // reset the element
+    }
+
+
+    // ────────────────────────────────────────────────────────
+    //  Audio playback (unchanged from original — voice mode)
+    // ────────────────────────────────────────────────────────
+
+    async function ensureAudioContext() {
+        if (!audioContext) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            await audioContext.resume();
+        }
+        return audioContext;
+    }
+
+    function initInstantMp3Player() {
+        if (mediaSource?.readyState === 'open') {
+            try { mediaSource.endOfStream(); } catch (e) { }
+        }
+
+        pendingChunks = [];
+        isPlaying = false;
+
+        mediaSource = new MediaSource();
+
+        audioNode = new Audio();
+        audioNode.src = URL.createObjectURL(mediaSource);
+        audioNode.autoplay = true;
+        audioNode.controls = false;
+
+        mediaSource.addEventListener('sourceopen', () => {
+            sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+
+            sourceBuffer.addEventListener('updateend', () => {
+                if (!isPlaying && mediaSource.duration > 0.05) {
+                    audioNode.play().catch(e => console.log("Play blocked (rare)", e));
+                    isPlaying = true;
+                }
+                if (pendingChunks.length > 0 && !sourceBuffer.updating) {
+                    sourceBuffer.appendBuffer(pendingChunks.shift());
+                }
+            });
+
+            while (pendingChunks.length > 0) {
+                sourceBuffer.appendBuffer(pendingChunks.shift());
+            }
+        });
+    }
+
+    async function playAudioChunk(blob) {
+        if (resModeSelect.value !== 'voice') return;
+
+        const buffer = await blob.arrayBuffer();
+
+        if (!mediaSource || mediaSource.readyState !== 'open') {
+            pendingChunks.push(buffer);
+            if (!mediaSource) {
+                await ensureAudioContext();
+                initInstantMp3Player();
+            }
+            return;
+        }
+
+        if (sourceBuffer.updating) {
+            pendingChunks.push(buffer);
+        } else {
+            sourceBuffer.appendBuffer(buffer);
+        }
+    }
+
+    // WAV Header Parsing Helpers
+    function isValidWavHeader(uint8) {
+        return uint8[0] === 82 && uint8[1] === 73 && uint8[2] === 70 && uint8[3] === 70 &&  // "RIFF"
+            uint8[8] === 87 && uint8[9] === 65 && uint8[10] === 86 && uint8[11] === 69;  // "WAVE"
+    }
+
+    function parseWavHeader(header) {
+        const view = new DataView(header.buffer);
+        sampleRate = view.getUint32(24, true);
+        channels = view.getUint16(22, true);
+        bitsPerSample = view.getUint16(34, true);
+    }
+
+    function findWavDataOffset(buffer) {
+        const view = new DataView(buffer);
+        let offset = 12;  // After RIFF header
+        while (offset < buffer.byteLength - 8) {
+            if (String.fromCharCode(view.getUint8(offset), view.getUint8(offset + 1), view.getUint8(offset + 2), view.getUint8(offset + 3)) === 'data') {
+                return offset + 8;  // Skip "data" + size
+            }
+            const chunkSize = view.getUint32(offset + 4, true);
+            offset += 8 + chunkSize;
+        }
+        return -1;
+    }
+
+    // PCM to Float32 Conversion (for 8/16/24/32-bit)
+    function convertPcmToFloat32(pcmUint8, bits) {
+        const numSamples = pcmUint8.length / (bits / 8);
+        const numChannels = channels || 1;
+        const samplesPerChannel = numSamples / numChannels;
+        const floatBuffers = Array.from({ length: numChannels }, () => new Float32Array(samplesPerChannel));
+
+        const bytes = bits / 8;
+        let offset = 0;
+        for (let i = 0; i < samplesPerChannel; i++) {
+            for (let ch = 0; ch < numChannels; ch++) {
+                let sample = 0;
+                for (let b = 0; b < bytes; b++) {
+                    sample = (sample << 8) | pcmUint8[offset++];
+                }
+                // Convert to signed int, then to [-1, 1] float
+                if (bits === 8) sample -= 128;
+                else if (sample & (1 << (bits - 1))) sample -= (1 << bits);  // Two's complement
+                floatBuffers[ch][i] = sample / ((1 << (bits - 1)) - 1);
+            }
+        }
+        return floatBuffers;
+    }
+
+
+    connect();
+</script>
