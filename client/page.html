@@ -20,7 +20,6 @@
 <button id="sendButton">Send</button>
 <div id="statusLog" style="margin-top:8px; font-family:monospace; font-size:12px; color:#666;"></div>
 
-<!-- hls.js for non-Safari browsers -->
 <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 
 <script>
@@ -186,18 +185,9 @@
     function startHLSPlayback(playlistUrl) {
         destroyHLSPlayer();
 
-        if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
-            // ── Native HLS (Safari / iOS) ──
-            log('Using native HLS playback');
-            videoElement.src = playlistUrl;
-            videoElement.addEventListener('loadedmetadata', () => {
-                videoElement.play().catch(e => console.warn('Autoplay blocked:', e));
-            }, { once: true });
-        } else if (typeof Hls !== 'undefined' && Hls.isSupported()) {
-            // ── hls.js polyfill (Chrome, Firefox, etc.) ──
+        if (typeof Hls !== 'undefined' && Hls.isSupported()) {
             log('Using hls.js playback');
             hlsPlayer = new Hls({
-                // Low-latency tuning: poll the playlist frequently
                 // since segments are being written as they generate
                 liveSyncDurationCount: 1,
                 liveMaxLatencyDurationCount: 3,
