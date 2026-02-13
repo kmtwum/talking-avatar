@@ -254,25 +254,54 @@ class HLSStreamingSDK(StreamingSDK):
         }
     
     async def wait_for_completion(self, generation_thread: threading.Thread, timeout: float = 300.0):
-        """Wait for generation to complete."""
+        """Wait for generation AND all pipeline worker threads to complete."""
         import time
         start_time = time.time()
         
         loop = asyncio.get_event_loop()
         
-        # Wait for thread in executor to avoid blocking event loop
+        # 1. Wait for the generation thread (feeds audio chunks)
         try:
             await asyncio.wait_for(
                 loop.run_in_executor(None, lambda: generation_thread.join(timeout=timeout)),
                 timeout=timeout
             )
         except asyncio.TimeoutError:
-            print(f"[HLS-SDK] Generation timed out after {timeout}s")
+            print(f"[HLS-SDK] Generation thread timed out after {timeout}s")
         
         if generation_thread.is_alive():
             print("[HLS-SDK] Warning: Generation thread still alive")
         
-        print(f"[HLS-SDK] Generation complete at {time.time() - start_time:.3f}s")
+        elapsed = time.time() - start_time
+        print(f"[HLS-SDK] Generation thread done at {elapsed:.3f}s")
+        
+        # 2. Wait for ALL pipeline worker threads to finish
+        #    (audio2motion → motion_stitch → warp → decode → putback → writer)
+        #    The generation thread already put None into audio2motion_queue,
+        #    which cascades through all queues. We just need to wait.
+        remaining_timeout = max(timeout - elapsed, 30.0)
+        
+        def _join_pipeline_threads():
+            for i, thread in enumerate(self.thread_list):
+                thread.join(timeout=remaining_timeout)
+                if thread.is_alive():
+                    print(f"[HLS-SDK] Warning: Pipeline thread {i} still alive")
+        
+        try:
+            await asyncio.wait_for(
+                loop.run_in_executor(None, _join_pipeline_threads),
+                timeout=remaining_timeout
+            )
+        except asyncio.TimeoutError:
+            print(f"[HLS-SDK] Pipeline threads timed out")
+        
+        elapsed = time.time() - start_time
+        print(f"[HLS-SDK] All pipeline threads complete at {elapsed:.3f}s")
+        
+        # 3. Report segment count
+        if self._hls_writer:
+            seg_count = self._hls_writer.get_segment_count()
+            print(f"[HLS-SDK] HLS writer produced {seg_count} segments")
         
     def _create_temp_combined_audio(self) -> str:
         """Create a temporary audio file with all current segments."""
@@ -480,26 +509,46 @@ class HLSVideoGenerator:
         """Get the URL for the HLS playlist."""
         return f"{base_url}/hls/{self.session_id}/stream.m3u8"
     
-    def cleanup(self):
-        """Cleanup resources."""
+    def cleanup_sdk(self):
+        """
+        Cleanup SDK resources but KEEP HLS output files.
+        
+        HLS files must persist so the client can fetch them via HTTP
+        after the WebSocket connection closes.
+        """
         if self._sdk:
             try:
                 self._sdk.stop_event.set()
                 self._sdk._audio_complete.set()
-                self._sdk.close()
+                # Close SDK (joins threads, releases GPU) but don't delete HLS files
                 self._sdk._audio_segments = []
                 self._sdk._total_audio = None
+                # Close the HLS writer (finalize FFmpeg) but don't delete output
+                if self._sdk._hls_writer:
+                    self._sdk._hls_writer.close()
+                    self._sdk._hls_writer = None
             except Exception as e:
-                print(f"[HLS-VideoGen] Cleanup error: {e}")
+                print(f"[HLS-VideoGen] SDK cleanup error: {e}")
             finally:
                 self._sdk = None
         
-        # Clean up HLS output files
+        print(f"[HLS-VideoGen] SDK cleanup complete (HLS files preserved at {self.hls_output_dir})")
+    
+    def cleanup_files(self):
+        """
+        Delete HLS output files from disk.
+        
+        Call this after a delay to ensure the client has finished downloading.
+        """
         if os.path.exists(self.hls_output_dir):
             import shutil
             try:
                 shutil.rmtree(self.hls_output_dir)
+                print(f"[HLS-VideoGen] Deleted HLS files: {self.hls_output_dir}")
             except Exception as e:
-                print(f"[HLS-VideoGen] Output cleanup error: {e}")
-        
-        print("[HLS-VideoGen] Cleanup complete")
+                print(f"[HLS-VideoGen] File cleanup error: {e}")
+    
+    def cleanup(self):
+        """Full cleanup: SDK + files. Only use for error cases."""
+        self.cleanup_sdk()
+        self.cleanup_files()

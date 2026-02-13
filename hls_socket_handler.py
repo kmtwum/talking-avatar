@@ -380,7 +380,12 @@ class HLSSocketHandler:
         })
         
     async def _cleanup(self):
-        """Cleanup resources when connection closes."""
+        """Cleanup resources when connection closes.
+        
+        SDK resources (GPU, threads) are freed immediately.
+        HLS files are kept on disk and deleted after a delay so the
+        client can still fetch .m3u8 / .ts segments via HTTP.
+        """
         print("[HLS-Handler] Cleaning up")
         
         # Cancel tasks
@@ -396,12 +401,19 @@ class HLSSocketHandler:
         if self.tts_streamer:
             await self.tts_streamer.stop()
             
-        # Cleanup video generator (removes HLS files)
+        # Cleanup SDK resources but KEEP HLS files on disk
         if self.video_generator:
-            self.video_generator.cleanup()
+            self.video_generator.cleanup_sdk()
+            
+            # Schedule deferred file deletion (5 minutes)
+            generator = self.video_generator
+            async def _deferred_file_cleanup():
+                await asyncio.sleep(300)  # 5 minutes
+                generator.cleanup_files()
+            asyncio.create_task(_deferred_file_cleanup())
             
         # Remove session from manager
         if self.session:
             SessionManager().remove_session(self.session.session_id)
             
-        print("[HLS-Handler] Cleanup complete")
+        print("[HLS-Handler] Cleanup complete (HLS files will be removed in 5 minutes)")

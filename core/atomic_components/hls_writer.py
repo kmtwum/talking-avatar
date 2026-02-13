@@ -70,6 +70,7 @@ class HLSStreamWriter:
         self._process: Optional[subprocess.Popen] = None
         self._started = False
         self._closed = False
+        self._finalized = False
         self._frames_written = 0
         
         # Segment tracking
@@ -327,8 +328,9 @@ class HLSStreamWriter:
         This causes FFmpeg to finish writing any remaining segments and
         add the #EXT-X-ENDLIST tag to the playlist.
         """
-        if self._closed:
+        if self._finalized:
             return
+        self._finalized = True
             
         print(f"[HLS] Finalizing stream ({self._frames_written} frames written)")
         
@@ -362,7 +364,6 @@ class HLSStreamWriter:
         """Close the writer, finalize, and cleanup."""
         if self._closed:
             return
-        
         self._closed = True
         self.finalize()
         
