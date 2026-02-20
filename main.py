@@ -13,7 +13,9 @@ import os
 from PIL import Image
 from io import BytesIO
 
-app = FastAPI()
+app = FastAPI(
+    root_path="/video"
+)
 
 # Add CORS middleware for WebSocket and HTTP requests
 from fastapi.middleware.cors import CORSMiddleware
