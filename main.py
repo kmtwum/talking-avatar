@@ -132,7 +132,7 @@ async def generate_tts_async(
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(tts_url, json={
                 "text": text,
-                "split_sentences": False,
+                "split_sentences": True,
                 "source_aud": voice_source,
                 "clone": user_id,
                 "streaming": False,
