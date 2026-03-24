@@ -507,7 +507,7 @@ class HLSVideoGenerator:
     
     def get_playlist_url(self, base_url: str = "") -> str:
         """Get the URL for the HLS playlist."""
-        return f"{base_url}/hls/{self.session_id}/stream.m3u8"
+        return f"{base_url}/video/hls/{self.session_id}/stream.m3u8"
     
     def cleanup_sdk(self):
         """
