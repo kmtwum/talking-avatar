@@ -330,26 +330,27 @@ class HLSSocketHandler:
             # Start HLS generation
             result = await self.video_generator.start_generation()
             
+            # Wait for ALL segments to be generated and playlist post-processed
+            await self.video_generator.wait_for_completion()
+            
             # Build playlist URL
             playlist_url = self.video_generator.get_playlist_url(self.hls_base_url)
             
-            # Notify client that HLS stream is ready
-            await self._send_json({
-                "type": HLSMessageType.HLS_READY,
-                "session_id": self.session.session_id,
-                "playlist_url": playlist_url,
-            })
-            print(f"[HLS-Handler] Sent HLS_READY: {playlist_url}", flush=True)
-            
-            # Wait for generation to complete
-            await self.video_generator.wait_for_completion()
-            
-            # Notify about individual segments
+            # Count segments
             segment_count = 0
             if self.video_generator._sdk and self.video_generator._sdk._hls_writer:
                 segment_count = self.video_generator._sdk._hls_writer.get_segment_count()
             
             print(f"[HLS-Handler] HLS generation complete: {segment_count} segments", flush=True)
+            
+            # NOW notify client — playlist is a complete VOD with all segments
+            await self._send_json({
+                "type": HLSMessageType.HLS_READY,
+                "session_id": self.session.session_id,
+                "playlist_url": playlist_url,
+                "segments": segment_count,
+            })
+            print(f"[HLS-Handler] Sent HLS_READY (VOD): {playlist_url}", flush=True)
             
             # Send completion message
             print("[HLS-Handler] Sending SESSION_COMPLETE...", flush=True)
