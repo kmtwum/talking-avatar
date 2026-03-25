@@ -13,6 +13,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from socket_session import SocketSession, SessionConfig, SessionManager, SessionState
 from tts_streamer import TTSStreamer
 from stream_pipeline_socket import SocketVideoGenerator, AudioSegment
+from gpu_concurrency import GPUConcurrencyManager
 
 
 class MessageType:
@@ -45,6 +46,9 @@ class SocketHandler:
         self.session: Optional[SocketSession] = None
         self.tts_streamer: Optional[TTSStreamer] = None
         self.video_generator: Optional[SocketVideoGenerator] = None
+        
+        # GPU concurrency
+        self._gpu_acquired = False
         
         # Pipeline tasks
         self._tts_task: Optional[asyncio.Task] = None
@@ -122,7 +126,25 @@ class SocketHandler:
         """Start the TTS and video generation pipeline."""
         if not self.session:
             raise RuntimeError("No session started")
-            
+        
+        # --- Acquire GPU slot (blocks if at capacity) ---
+        gpu_mgr = GPUConcurrencyManager()
+        if gpu_mgr.is_at_capacity:
+            await self._send_json({
+                "type": MessageType.STATUS,
+                "queue_position": gpu_mgr.queue_position + 1,
+                "message": "Waiting for GPU availability...",
+            })
+        
+        acquired = await gpu_mgr.acquire()
+        if not acquired:
+            await self._send_error(
+                "Server is at capacity. Please try again shortly.",
+                "SERVER_BUSY"
+            )
+            raise RuntimeError("GPU acquisition timed out")
+        self._gpu_acquired = True
+        
         # Initialize TTS streamer
         self.tts_streamer = TTSStreamer(self.session)
         await self.tts_streamer.start()
@@ -381,6 +403,11 @@ class SocketHandler:
         # Cleanup video generator
         if self.video_generator:
             self.video_generator.cleanup()
+            
+        # Release GPU slot
+        if self._gpu_acquired:
+            GPUConcurrencyManager().release()
+            self._gpu_acquired = False
             
         # Remove session from manager
         if self.session:

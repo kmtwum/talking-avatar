@@ -179,6 +179,8 @@ async def quick_generate(
         watermark_position: str = Form("bottom-right")
 ):
     """Optimized endpoint for fast generation"""
+    from gpu_concurrency import GPUConcurrencyManager
+    gpu_mgr = GPUConcurrencyManager()
 
     img_path = f"/app/user_img/{avatar}.jpg"
     if not os.path.exists(img_path):
@@ -216,8 +218,18 @@ async def quick_generate(
         cmd.append("--watermark")
         cmd.extend(["--watermark_position", watermark_position])
 
-    process = await asyncio.create_subprocess_exec(*cmd)
-    await process.wait()
+    # Acquire GPU slot before running the subprocess
+    acquired = await gpu_mgr.acquire()
+    if not acquired:
+        return JSONResponse(
+            {"error": "Server is at capacity. Please try again shortly."},
+            status_code=503
+        )
+    try:
+        process = await asyncio.create_subprocess_exec(*cmd)
+        await process.wait()
+    finally:
+        gpu_mgr.release()
 
     # Clean up temp audio
     if os.path.exists(audio_path):
@@ -250,6 +262,13 @@ async def upload_photo(user_id: str = Form(...), image: UploadFile = File(...)):
 @app.get("/health")
 def health():
     return {"status": "ready"}
+
+
+@app.get("/gpu/status")
+async def gpu_status():
+    """Return current GPU concurrency status for monitoring."""
+    from gpu_concurrency import GPUConcurrencyManager
+    return GPUConcurrencyManager().get_status()
 
 
 # Simple WebSocket test endpoint
@@ -467,6 +486,9 @@ async def generate_stream(
     
     async def stream_chunks():
         """Async generator yielding fMP4 segments."""
+        from gpu_concurrency import GPUConcurrencyManager
+        gpu_mgr = GPUConcurrencyManager()
+        gpu_acquired = False
         try:
             print(f"[ENDPOINT] Starting stream_chunks at {time.time() - start_time:.3f}s")
             
@@ -474,6 +496,12 @@ async def generate_stream(
             import os
             
             print(f"[ENDPOINT] Imported StreamingSDK at {time.time() - start_time:.3f}s")
+            
+            # Acquire GPU slot before creating SDK
+            acquired = await gpu_mgr.acquire()
+            if not acquired:
+                raise RuntimeError("Server is at capacity. Please try again shortly.")
+            gpu_acquired = True
             
             # Get SDK configuration
             cfg_pkl = "/app/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_online.pkl"
@@ -503,6 +531,9 @@ async def generate_stream(
             traceback.print_exc()
             raise
         finally:
+            # Release GPU slot
+            if gpu_acquired:
+                gpu_mgr.release()
             # Cleanup audio file
             try:
                 os.remove(audio_path)

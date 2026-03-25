@@ -19,6 +19,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from socket_session import SocketSession, SessionConfig, SessionManager, SessionState
 from tts_streamer import TTSStreamer
 from stream_pipeline_hls import HLSVideoGenerator, AudioSegment
+from gpu_concurrency import GPUConcurrencyManager
 
 
 class HLSMessageType:
@@ -59,6 +60,9 @@ class HLSSocketHandler:
         self.session: Optional[SocketSession] = None
         self.tts_streamer: Optional[TTSStreamer] = None
         self.video_generator: Optional[HLSVideoGenerator] = None
+        
+        # GPU concurrency
+        self._gpu_acquired = False
         
         # Pipeline tasks
         self._tts_task: Optional[asyncio.Task] = None
@@ -137,7 +141,25 @@ class HLSSocketHandler:
         """Start the TTS and HLS video generation pipeline."""
         if not self.session:
             raise RuntimeError("No session started")
-            
+        
+        # --- Acquire GPU slot (blocks if at capacity) ---
+        gpu_mgr = GPUConcurrencyManager()
+        if gpu_mgr.is_at_capacity:
+            await self._send_json({
+                "type": HLSMessageType.STATUS,
+                "queue_position": gpu_mgr.queue_position + 1,
+                "message": "Waiting for GPU availability...",
+            })
+        
+        acquired = await gpu_mgr.acquire()
+        if not acquired:
+            await self._send_error(
+                "Server is at capacity. Please try again shortly.",
+                "SERVER_BUSY"
+            )
+            raise RuntimeError("GPU acquisition timed out")
+        self._gpu_acquired = True
+        
         # Initialize TTS streamer
         self.tts_streamer = TTSStreamer(self.session)
         await self.tts_streamer.start()
@@ -411,6 +433,11 @@ class HLSSocketHandler:
                 await asyncio.sleep(300)  # 5 minutes
                 generator.cleanup_files()
             asyncio.create_task(_deferred_file_cleanup())
+        
+        # Release GPU slot
+        if self._gpu_acquired:
+            GPUConcurrencyManager().release()
+            self._gpu_acquired = False
             
         # Remove session from manager
         if self.session:
