@@ -298,12 +298,20 @@ class AvatarSession:
                         break
                         
                     elif msg_type == "ERROR":
+                        error_code = msg.get("code", "")
                         print(f"[Gateway {self.session_id}] Avatar error: {msg}")
                         await self._forward_to_client_json(msg)
+                        # SERVER_BUSY means GPU is at capacity — abort
+                        if error_code == "SERVER_BUSY":
+                            print(f"[Gateway {self.session_id}] Server busy, ending session")
+                            self.session_complete.set()
+                            break
                         
                     elif msg_type == "STATUS":
-                        # Optionally forward status updates
-                        pass
+                        # Forward queue position updates to client
+                        if msg.get("queue_position") is not None:
+                            print(f"[Gateway {self.session_id}] Queue position: {msg.get('queue_position')}")
+                            await self._forward_to_client_json(msg)
                         
         except ConnectionClosed:
             print(f"[Gateway {self.session_id}] Avatar connection closed in receiver")
@@ -548,9 +556,6 @@ async def stream_llm_to_video(
         # Flush remaining buffer
         await processor.flush()
         
-        # End session
-        await avatar_session.end()
-        
         # Report stats
         print(f"[Gateway] Stream complete: {token_count} tokens, "
               f"{processor.seq} sentences sent")
@@ -559,8 +564,11 @@ async def stream_llm_to_video(
         print(f"[Gateway] Error in stream_llm_to_video: {e}")
         import traceback
         traceback.print_exc()
-        await avatar_session.end()
         raise
+    finally:
+        # Always end the avatar session — ensures the backend WS is
+        # closed even when the client disconnects mid-stream.
+        await avatar_session.end()
 
 
 # ============================================================================

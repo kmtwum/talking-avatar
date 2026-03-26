@@ -317,21 +317,45 @@ class HLSSocketHandler:
         5. Sends SESSION_COMPLETE when done
         """
         try:
-            # Wait for all audio to be ready
-            print("[HLS-Handler] Waiting for all audio to be ready...", flush=True)
+            # Heartbeat task — sends STATUS every 10s to keep the
+            # WebSocket alive through load-balancer idle timeouts.
+            async def _heartbeat():
+                while True:
+                    await asyncio.sleep(10.0)
+                    try:
+                        await self._send_json({
+                            "type": HLSMessageType.STATUS,
+                            "message": "Generating video...",
+                            **(self.session.get_status() if self.session else {}),
+                        })
+                        print("[HLS-Handler] Heartbeat sent", flush=True)
+                    except Exception:
+                        break
+
+            heartbeat_task = asyncio.create_task(_heartbeat())
+
             try:
-                await asyncio.wait_for(self.session.all_audio_ready.wait(), timeout=120.0)
-                print(f"[HLS-Handler] All audio ready "
-                      f"({self.session.audio_segments_buffered} segments, "
-                      f"{self.session.audio_duration_buffered:.2f}s)", flush=True)
-            except asyncio.TimeoutError:
-                print("[HLS-Handler] Timeout waiting for audio, starting anyway", flush=True)
-            
-            # Start HLS generation
-            result = await self.video_generator.start_generation()
-            
-            # Wait for ALL segments to be generated and playlist post-processed
-            await self.video_generator.wait_for_completion()
+                # Wait for all audio to be ready
+                print("[HLS-Handler] Waiting for all audio to be ready...", flush=True)
+                try:
+                    await asyncio.wait_for(self.session.all_audio_ready.wait(), timeout=120.0)
+                    print(f"[HLS-Handler] All audio ready "
+                          f"({self.session.audio_segments_buffered} segments, "
+                          f"{self.session.audio_duration_buffered:.2f}s)", flush=True)
+                except asyncio.TimeoutError:
+                    print("[HLS-Handler] Timeout waiting for audio, starting anyway", flush=True)
+                
+                # Start HLS generation
+                result = await self.video_generator.start_generation()
+                
+                # Wait for ALL segments to be generated and playlist post-processed
+                await self.video_generator.wait_for_completion()
+            finally:
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
             
             # Build playlist URL
             playlist_url = self.video_generator.get_playlist_url(self.hls_base_url)
