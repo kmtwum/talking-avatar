@@ -368,18 +368,21 @@ class HLSSocketHandler:
             print(f"[HLS-Handler] HLS generation complete: {segment_count} segments", flush=True)
             
             # NOW notify client — playlist is a complete VOD with all segments
-            await self._send_json({
+            hls_sent = await self._send_json({
                 "type": HLSMessageType.HLS_READY,
                 "session_id": self.session.session_id,
                 "playlist_url": playlist_url,
                 "segments": segment_count,
             })
-            print(f"[HLS-Handler] Sent HLS_READY (VOD): {playlist_url}", flush=True)
+            if hls_sent:
+                print(f"[HLS-Handler] Sent HLS_READY (VOD): {playlist_url}", flush=True)
+            else:
+                print(f"[HLS-Handler] HLS_READY FAILED to send (WebSocket dead). "
+                      f"Playlist still available at: {playlist_url}", flush=True)
             
             # Send completion message
-            print("[HLS-Handler] Sending SESSION_COMPLETE...", flush=True)
             self.session.complete()
-            await self._send_json({
+            complete_sent = await self._send_json({
                 "type": HLSMessageType.SESSION_COMPLETE,
                 "total_duration_ms": self.session.total_duration_ms,
                 "chunks_processed": self.session.chunks_processed,
@@ -388,7 +391,10 @@ class HLSSocketHandler:
                 "hls_segments": segment_count,
                 "playlist_url": playlist_url,
             })
-            print("[HLS-Handler] SESSION_COMPLETE sent successfully", flush=True)
+            if complete_sent:
+                print("[HLS-Handler] SESSION_COMPLETE sent successfully", flush=True)
+            else:
+                print("[HLS-Handler] SESSION_COMPLETE failed to send (WebSocket dead)", flush=True)
             
         except asyncio.CancelledError:
             print("[HLS-Handler] HLS generation cancelled", flush=True)
@@ -401,12 +407,14 @@ class HLSSocketHandler:
             self.session.set_error(e)
             await self._send_error(str(e), "VIDEO_ERROR")
             
-    async def _send_json(self, data: dict):
-        """Send JSON message to client."""
+    async def _send_json(self, data: dict) -> bool:
+        """Send JSON message to client. Returns True if sent, False if failed."""
         try:
             await self.websocket.send_json(data)
+            return True
         except Exception as e:
-            print(f"[HLS-Handler] Failed to send JSON: {e}")
+            print(f"[HLS-Handler] Failed to send {data.get('type', '?')}: {e}")
+            return False
             
     async def _send_status(self):
         """Send status update to client."""
@@ -429,20 +437,36 @@ class HLSSocketHandler:
     async def _cleanup(self):
         """Cleanup resources when connection closes.
         
-        SDK resources (GPU, threads) are freed immediately.
-        HLS files are kept on disk and deleted after a delay so the
-        client can still fetch .m3u8 / .ts segments via HTTP.
+        In VOD mode, video generation writes to disk, so it's useful even
+        if the WebSocket dies. We let _video_task finish (with a timeout)
+        instead of cancelling it, so the playlist is always complete.
         """
         print("[HLS-Handler] Cleaning up")
         
-        # Cancel tasks
-        for task in [self._tts_task, self._audio_bridge_task, self._video_task]:
+        # Cancel TTS and audio bridge tasks (they depend on the WebSocket)
+        for task in [self._tts_task, self._audio_bridge_task]:
             if task and not task.done():
                 task.cancel()
                 try:
                     await task
                 except asyncio.CancelledError:
                     pass
+        
+        # Let _video_task finish — it writes to disk and the playlist
+        # is still useful for HTTP fetches even if the WS is dead.
+        if self._video_task and not self._video_task.done():
+            print("[HLS-Handler] Waiting for video generation to finish...", flush=True)
+            try:
+                await asyncio.wait_for(self._video_task, timeout=180.0)
+            except asyncio.TimeoutError:
+                print("[HLS-Handler] Video generation timed out, cancelling", flush=True)
+                self._video_task.cancel()
+                try:
+                    await self._video_task
+                except asyncio.CancelledError:
+                    pass
+            except asyncio.CancelledError:
+                pass
                     
         # Stop TTS streamer
         if self.tts_streamer:
@@ -452,10 +476,10 @@ class HLSSocketHandler:
         if self.video_generator:
             self.video_generator.cleanup_sdk()
             
-            # Schedule deferred file deletion (5 minutes)
+            # Schedule deferred file deletion (2 minutes)
             generator = self.video_generator
             async def _deferred_file_cleanup():
-                await asyncio.sleep(300)  # 5 minutes
+                await asyncio.sleep(120)  # 2 minutes
                 generator.cleanup_files()
             asyncio.create_task(_deferred_file_cleanup())
         
