@@ -142,29 +142,11 @@ class HLSSocketHandler:
         if not self.session:
             raise RuntimeError("No session started")
         
-        # --- Acquire GPU slot (blocks if at capacity) ---
-        gpu_mgr = GPUConcurrencyManager()
-        if gpu_mgr.is_at_capacity:
-            await self._send_json({
-                "type": HLSMessageType.STATUS,
-                "queue_position": gpu_mgr.queue_position + 1,
-                "message": "Waiting for GPU availability...",
-            })
-        
-        acquired = await gpu_mgr.acquire()
-        if not acquired:
-            await self._send_error(
-                "Server is at capacity. Please try again shortly.",
-                "SERVER_BUSY"
-            )
-            raise RuntimeError("GPU acquisition timed out")
-        self._gpu_acquired = True
-        
         # Initialize TTS streamer
         self.tts_streamer = TTSStreamer(self.session)
         await self.tts_streamer.start()
         
-        # Initialize HLS video generator
+        # Initialize HLS video generator (loads model weights, no GPU compute yet)
         self.video_generator = HLSVideoGenerator(
             source_path=self.session.get_image_path(),
             width=self.session.config.size,
@@ -178,7 +160,7 @@ class HLSSocketHandler:
         # Start audio bridge (moves audio from session queue to video generator)
         self._audio_bridge_task = asyncio.create_task(self._audio_bridge())
         
-        # Start HLS generation task
+        # Start HLS generation task (GPU is acquired/released inside this task)
         self._video_task = asyncio.create_task(self._run_hls_generation())
         
         print(f"[HLS-Handler] Pipeline started for session {self.session.session_id}")
@@ -335,7 +317,7 @@ class HLSSocketHandler:
             heartbeat_task = asyncio.create_task(_heartbeat())
 
             try:
-                # Wait for all audio to be ready
+                # Wait for all audio to be ready (no GPU needed)
                 print("[HLS-Handler] Waiting for all audio to be ready...", flush=True)
                 try:
                     await asyncio.wait_for(self.session.all_audio_ready.wait(), timeout=120.0)
@@ -345,11 +327,37 @@ class HLSSocketHandler:
                 except asyncio.TimeoutError:
                     print("[HLS-Handler] Timeout waiting for audio, starting anyway", flush=True)
                 
-                # Start HLS generation
-                result = await self.video_generator.start_generation()
+                # --- Acquire GPU slot just before generation ---
+                gpu_mgr = GPUConcurrencyManager()
+                if gpu_mgr.is_at_capacity:
+                    await self._send_json({
+                        "type": HLSMessageType.STATUS,
+                        "queue_position": gpu_mgr.queue_position + 1,
+                        "message": "Waiting for GPU availability...",
+                    })
                 
-                # Wait for ALL segments to be generated and playlist post-processed
-                await self.video_generator.wait_for_completion()
+                acquired = await gpu_mgr.acquire()
+                if not acquired:
+                    await self._send_error(
+                        "Server is at capacity. Please try again shortly.",
+                        "SERVER_BUSY"
+                    )
+                    raise RuntimeError("GPU acquisition timed out")
+                self._gpu_acquired = True
+                print("[HLS-Handler] GPU slot acquired for generation", flush=True)
+                
+                try:
+                    # Start HLS generation (GPU-bound)
+                    result = await self.video_generator.start_generation()
+                    
+                    # Wait for ALL pipeline threads to finish
+                    await self.video_generator.wait_for_completion()
+                finally:
+                    # --- Release GPU slot immediately after generation ---
+                    if self._gpu_acquired:
+                        GPUConcurrencyManager().release()
+                        self._gpu_acquired = False
+                        print("[HLS-Handler] GPU slot released after generation", flush=True)
             finally:
                 heartbeat_task.cancel()
                 try:
@@ -483,10 +491,12 @@ class HLSSocketHandler:
                 generator.cleanup_files()
             asyncio.create_task(_deferred_file_cleanup())
         
-        # Release GPU slot
+        # Release GPU slot (safety net — should already be released
+        # by _run_hls_generation, but guard against error paths)
         if self._gpu_acquired:
             GPUConcurrencyManager().release()
             self._gpu_acquired = False
+            print("[HLS-Handler] GPU slot released in cleanup (was still held)", flush=True)
             
         # Remove session from manager
         if self.session:
