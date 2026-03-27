@@ -167,7 +167,7 @@ class SocketStreamingSDK(StreamingSDK):
         print("[SocketSDK] Starting segment iteration...", flush=True)
         
         loop = asyncio.get_event_loop()
-        segment_iter = self._fmp4_writer.iter_segments(timeout=0.5)  # Short timeout for responsiveness
+        segment_iter = self._fmp4_writer.iter_segments(timeout=1.0)  # Match larger fragment duration
         
         while True:
             try:

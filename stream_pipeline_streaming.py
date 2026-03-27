@@ -91,7 +91,7 @@ class StreamingSDK(StreamSDK):
             width=self._streaming_output_width,
             height=self._streaming_output_height,
             fps=25,
-            fragment_duration_frames=5,
+            fragment_duration_frames=12,
             audio_path=audio_path
         )
         

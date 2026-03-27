@@ -373,7 +373,7 @@ class FMP4StreamWriter:
         """
         moof_data = None
         empty_count = 0
-        max_empty = 5  # Exit after 5 consecutive empty gets (5 * timeout seconds)
+        max_empty = 15  # Exit after 15 consecutive empty gets (prevents premature exit during burst gaps)
         
         while True:
             try:
