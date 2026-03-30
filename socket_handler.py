@@ -323,16 +323,40 @@ class SocketHandler:
             
             # Stream video segments
             segment_count = 0
+            media_buffer = []
+            prebuffer_size = 3  # Wait for 3 media chunks before sending to client
+            is_buffering = True
+
             async for segment in self.video_generator.generate():
-                # Send binary segment
-                await self.websocket.send_bytes(segment)
                 segment_count += 1
                 
                 if segment_count == 1:
+                    # Send init segment immediately
+                    await self.websocket.send_bytes(segment)
                     print(f"[SocketHandler] Sent init segment ({len(segment)} bytes)", flush=True)
-                elif segment_count % 10 == 0:
-                    print(f"[SocketHandler] Sent {segment_count} segments", flush=True)
+                    continue
+
+                if is_buffering:
+                    media_buffer.append(segment)
+                    print(f"[SocketHandler] Pre-buffering segment {segment_count-1}/{prebuffer_size}", flush=True)
                     
+                    if len(media_buffer) >= prebuffer_size:
+                        is_buffering = False
+                        print(f"[SocketHandler] Pre-buffer full, sending {len(media_buffer)} segments...", flush=True)
+                        for buf_seg in media_buffer:
+                            await self.websocket.send_bytes(buf_seg)
+                        media_buffer.clear()
+                else:
+                    # Send binary segment immediately
+                    await self.websocket.send_bytes(segment)
+                    
+                if segment_count % 10 == 0:
+                    print(f"[SocketHandler] Processed {segment_count} segments", flush=True)
+                    
+            # Send any remaining segments if generation finished before pre-buffer filled
+            for buf_seg in media_buffer:
+                await self.websocket.send_bytes(buf_seg)
+                
             print(f"[SocketHandler] Video streaming complete: {segment_count} segments", flush=True)
             
             # Send completion message

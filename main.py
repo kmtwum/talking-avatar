@@ -521,9 +521,30 @@ async def generate_stream(
             )
             
             print(f"[ENDPOINT] Starting chunk generation at {time.time() - start_time:.3f}s")
-            # Yield chunks as they're generated
+            # Yield chunks as they're generated, with pre-buffering
+            segment_count = 0
+            media_buffer = []
+            prebuffer_size = 3
+            is_buffering = True
+
             async for chunk in streaming_sdk.generate_chunks(audio_path):
-                yield chunk
+                segment_count += 1
+                if segment_count == 1:
+                    yield chunk
+                    continue
+                
+                if is_buffering:
+                    media_buffer.append(chunk)
+                    if len(media_buffer) >= prebuffer_size:
+                        is_buffering = False
+                        for buf_seg in media_buffer:
+                            yield buf_seg
+                        media_buffer.clear()
+                else:
+                    yield chunk
+
+            for buf_seg in media_buffer:
+                yield buf_seg
                 
         except Exception as e:
             print(f"[ENDPOINT] Error during streaming: {e}")
