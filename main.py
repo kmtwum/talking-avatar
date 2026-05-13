@@ -260,7 +260,7 @@ async def upload_photo(user_id: str = Form(...), image: UploadFile = File(...)):
 
 
 @app.delete("/presave-photo")
-async def delete_photo(user_id: str = Form(...)):
+async def delete_photo(user_id: str):
     img_path = f"/app/user_img/{user_id}.jpg"
     if os.path.exists(img_path):
         os.remove(img_path)
