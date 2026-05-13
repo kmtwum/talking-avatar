@@ -273,6 +273,10 @@ class TTSStreamer:
                 
                 if chunk is None:
                     await self.session.audio_queue.put(None)
+                    # Signal that all audio is ready for video generation.
+                    # Without this the video task would wait the full
+                    # all_audio_ready timeout (120s) before starting.
+                    self.session.all_audio_ready.set()
                     break
                     
                 await self._generate_and_queue(chunk.seq, chunk.text)
@@ -280,6 +284,7 @@ class TTSStreamer:
             except asyncio.TimeoutError:
                 if self.session.state.value == "closing":
                     await self.session.audio_queue.put(None)
+                    self.session.all_audio_ready.set()
                     break
                 continue
                 

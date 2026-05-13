@@ -303,23 +303,27 @@ class SocketHandler:
     async def _stream_video_output(self):
         """
         Stream video segments to the client as they're generated.
-        
-        Waits for audio pre-buffer before starting video generation
-        to ensure smooth playback.
-        
+
+        Gates on ``first_audio_ready`` rather than ``all_audio_ready`` so
+        the GPU pipeline can begin processing audio chunks while TTS for
+        later sentences is still running. ``SocketStreamingSDK.generate_progressive``
+        defers FFmpeg startup internally until audio is final, so this
+        early start is safe for audio muxing.
+
         Sends binary fMP4 segments via WebSocket.
         """
         try:
-            # Wait for ALL audio to be ready before starting video
-            # This ensures FFmpeg has complete audio and won't cut off early
-            print("[SocketHandler] Waiting for all audio to be ready...", flush=True)
+            # Wait for the FIRST audio segment to be ready, then hand off
+            # to generate_progressive (which spawns the GPU thread and
+            # internally waits for _audio_complete before starting FFmpeg).
+            print("[SocketHandler] Waiting for first audio segment...", flush=True)
             try:
-                await asyncio.wait_for(self.session.all_audio_ready.wait(), timeout=120.0)
-                print(f"[SocketHandler] All audio ready, starting video stream "
-                      f"({self.session.audio_segments_buffered} segments, "
+                await asyncio.wait_for(self.session.first_audio_ready.wait(), timeout=120.0)
+                print(f"[SocketHandler] First audio ready, starting video pipeline "
+                      f"({self.session.audio_segments_buffered} segments so far, "
                       f"{self.session.audio_duration_buffered:.2f}s)", flush=True)
             except asyncio.TimeoutError:
-                print("[SocketHandler] Timeout waiting for audio, starting anyway", flush=True)
+                print("[SocketHandler] Timeout waiting for first audio, starting anyway", flush=True)
             
             # Stream video segments
             segment_count = 0

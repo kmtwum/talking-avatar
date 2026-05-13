@@ -106,10 +106,23 @@ class SocketStreamingSDK(StreamingSDK):
     async def generate_progressive(self) -> AsyncIterator[bytes]:
         """
         Async generator that yields fMP4 segments as audio arrives.
-        
-        Starts video generation immediately when first audio is available,
-        and continues processing as more audio segments arrive.
-        
+
+        Two-phase startup to overlap GPU inference with upstream TTS:
+        - Phase 1: As soon as the first audio segment is ready, spawn the
+          GPU generation thread. It processes audio chunks in memory and
+          accumulates video frames in the writer queue. The writer worker
+          is gated on ``_fmp4_ready`` so frames buffer safely until FFmpeg
+          is set up.
+        - Phase 2: Once ``_audio_complete`` fires (all TTS done), build the
+          final combined audio file and start FFmpeg. The writer worker
+          unblocks and rapidly drains the pre-generated frame queue into
+          FFmpeg, which emits init + media segments.
+
+        FFmpeg cannot pick up changes to its input audio file mid-encoding,
+        so its startup must be deferred until audio is final. The GPU
+        pipeline has no such restriction — it operates on
+        ``self._total_audio`` in memory.
+
         Yields:
             bytes: fMP4 segments (init segment first, then media segments)
         """
@@ -120,42 +133,59 @@ class SocketStreamingSDK(StreamingSDK):
         if not self._streaming_mode:
             raise RuntimeError("Must call setup_socket_streaming() before generate_progressive()")
         
-        # Wait for first audio segment
+        # --- Phase 1: wait for first audio, then start GPU thread ---
         print("[SocketSDK] Waiting for first audio segment...")
-        
-        first_segment = None
         while not self._audio_segments:
             await asyncio.sleep(0.05)
             if self._audio_complete.is_set():
                 break
-                
+
         if not self._audio_segments:
             raise RuntimeError("No audio segments received")
-            
-        first_segment = self._audio_segments[0]
-        print(f"[SocketSDK] First audio received at {time.time() - start_time:.3f}s")
-        
-        # Setup fMP4 writer with first audio for timing info
-        # Note: We'll use a combined audio file later for proper muxing
-        temp_audio = self._create_temp_combined_audio()
-        self._setup_streaming_writer(temp_audio)
-        
-        # Calculate initial frame count
-        initial_frames = self._calculate_frame_count()
-        self.setup_Nd(N_d=initial_frames)
-        
-        # Start generation in background thread
+
+        print(f"[SocketSDK] First audio received at {time.time() - start_time:.3f}s, "
+              f"starting GPU thread (FFmpeg deferred until audio complete)")
+
+        # Spawn the GPU generation thread immediately. It will:
+        #   - call _create_temp_combined_audio() each time new segments arrive
+        #     (rebuilds the in-memory self._total_audio AND the on-disk WAV)
+        #   - call setup_Nd() with the growing frame count
+        #   - feed audio chunks via run_chunk(); produced frames flow through
+        #     the SDK pipeline into writer_queue -> _streaming_writer_worker
+        #   - _streaming_writer_worker blocks on _fmp4_ready until FFmpeg
+        #     is set up below, so frames buffer in writer_queue
         generation_thread = threading.Thread(
             target=self._run_progressive_generation,
             args=(start_time,)
         )
         generation_thread.start()
-        
-        # Yield init segment
+
+        # --- Phase 2: wait for audio to finalise, then start FFmpeg ---
+        print("[SocketSDK] Waiting for audio_complete before FFmpeg startup...")
+        ffmpeg_wait_start = time.time()
+        while not self._audio_complete.is_set():
+            await asyncio.sleep(0.1)
+        print(f"[SocketSDK] Audio complete at {time.time() - start_time:.3f}s "
+              f"(GPU thread had {time.time() - ffmpeg_wait_start:.2f}s head start)")
+
+        # Give the generation thread a tick to write the final combined audio
+        # (it calls _create_temp_combined_audio on each loop iteration when new
+        # segments arrive). We then re-call it here to guarantee freshness
+        # before FFmpeg opens the file — this is idempotent if no new audio
+        # arrived since the thread's last write.
+        await asyncio.sleep(0.05)
+        temp_audio = self._create_temp_combined_audio()
+        if temp_audio is None:
+            raise RuntimeError("No audio available for FFmpeg setup")
+
+        self._setup_streaming_writer(temp_audio)
+
+        # Yield init segment (writer worker is now unblocked and draining queue)
         print("[SocketSDK] Waiting for init segment...")
         try:
             init_segment = self._fmp4_writer.get_init_segment(timeout=15.0)
-            print(f"[SocketSDK] Init segment ready ({len(init_segment)} bytes)")
+            print(f"[SocketSDK] Init segment ready ({len(init_segment)} bytes) "
+                  f"at {time.time() - start_time:.3f}s")
             yield init_segment
         except TimeoutError:
             raise RuntimeError("Failed to get initialization segment")
