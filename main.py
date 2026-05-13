@@ -259,7 +259,7 @@ async def upload_photo(user_id: str = Form(...), image: UploadFile = File(...)):
     return {"message": "Photo uploaded successfully", "user_id": user_id}
 
 
-@app.delete("/delete-photo")
+@app.delete("/presave-photo")
 async def delete_photo(user_id: str = Form(...)):
     img_path = f"/app/user_img/{user_id}.jpg"
     if os.path.exists(img_path):
