@@ -80,7 +80,7 @@ def generate_tts(text: str, tts_preference: str = "coqui", tts_voice_id: str = N
         return audio_path
     else:
         from elevenlabs.client import ElevenLabs
-        api_key = os.getenv("ELEVENLABS_API_KEY")
+        api_key = get_secret_key('ELEVENLABS_API_KEY_FILE', os.getenv("ELEVENLABS_API_KEY"))
         voice_id = os.getenv("VOICE_ID")
         if tts_voice_id:
             print(f"Using voice ID from request: {tts_voice_id}")
@@ -154,13 +154,13 @@ async def generate_tts_async(
         )
 
 
-def get_secret_key(secret):
+def get_secret_key(secret, default: str = None):
     key_file = os.getenv(secret)
     if key_file:
         with open(key_file, 'r') as f:
             api_key = f.read().strip()
             return api_key
-    return None
+    return default
 
 
 @app.post("/generate")
