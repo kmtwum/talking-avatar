@@ -236,27 +236,49 @@ class SocketStreamingSDK(StreamingSDK):
         
     def _create_temp_combined_audio(self) -> str:
         """
-        Create a temporary audio file with all current segments.
-        
-        This is updated as more segments arrive.
+        Create / refresh the combined audio file used by FFmpeg for muxing.
+
+        Trims leading/trailing silence from each segment before concatenation
+        to eliminate the cumulative ElevenLabs padding that otherwise produces
+        audible pauses at every chunk boundary. Every TTS call adds small
+        leading/trailing silence as part of natural prosody — raw concatenation
+        accumulates these into perceptible mid-response pauses.
+
+        ``top_db=30`` is conservative: it strips clear silence while preserving
+        natural quiet phonemes (s, f, h) and breath. ``frame_length=512`` /
+        ``hop_length=128`` keep the trim boundary precise (~8 ms resolution at
+        16 kHz) so we don't clip syllable onsets.
         """
         if not self._audio_segments:
             return None
-            
-        # Combine all audio segments
-        audio_arrays = [s.audio_data for s in self._audio_segments if s.audio_data is not None]
-        
-        if not audio_arrays:
+
+        raw_arrays = [s.audio_data for s in self._audio_segments if s.audio_data is not None]
+        if not raw_arrays:
             return None
-            
-        combined = np.concatenate(audio_arrays)
+
+        trimmed_arrays = []
+        for arr in raw_arrays:
+            if arr.size == 0:
+                continue
+            trimmed, _ = librosa.effects.trim(
+                arr,
+                top_db=30,
+                frame_length=512,
+                hop_length=128,
+            )
+            if trimmed.size > 0:
+                trimmed_arrays.append(trimmed)
+
+        if not trimmed_arrays:
+            return None
+
+        combined = np.concatenate(trimmed_arrays)
         self._total_audio = combined
-        
-        # Save to temp file
+
         import soundfile as sf
         temp_path = f"{self._temp_dir}/combined_audio.wav"
         sf.write(temp_path, combined, 16000)
-        
+
         return temp_path
         
     def _calculate_frame_count(self) -> int:
