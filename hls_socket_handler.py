@@ -19,6 +19,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from socket_session import SocketSession, SessionConfig, SessionManager, SessionState
 from tts_streamer import TTSStreamer
 from stream_pipeline_hls import HLSVideoGenerator, AudioSegment
+from gpu_concurrency import GPUConcurrencyManager
 
 
 class HLSMessageType:
@@ -59,6 +60,9 @@ class HLSSocketHandler:
         self.session: Optional[SocketSession] = None
         self.tts_streamer: Optional[TTSStreamer] = None
         self.video_generator: Optional[HLSVideoGenerator] = None
+        
+        # GPU concurrency
+        self._gpu_acquired = False
         
         # Pipeline tasks
         self._tts_task: Optional[asyncio.Task] = None
@@ -137,12 +141,12 @@ class HLSSocketHandler:
         """Start the TTS and HLS video generation pipeline."""
         if not self.session:
             raise RuntimeError("No session started")
-            
+        
         # Initialize TTS streamer
         self.tts_streamer = TTSStreamer(self.session)
         await self.tts_streamer.start()
         
-        # Initialize HLS video generator
+        # Initialize HLS video generator (loads model weights, no GPU compute yet)
         self.video_generator = HLSVideoGenerator(
             source_path=self.session.get_image_path(),
             width=self.session.config.size,
@@ -156,7 +160,7 @@ class HLSSocketHandler:
         # Start audio bridge (moves audio from session queue to video generator)
         self._audio_bridge_task = asyncio.create_task(self._audio_bridge())
         
-        # Start HLS generation task
+        # Start HLS generation task (GPU is acquired/released inside this task)
         self._video_task = asyncio.create_task(self._run_hls_generation())
         
         print(f"[HLS-Handler] Pipeline started for session {self.session.session_id}")
@@ -295,44 +299,98 @@ class HLSSocketHandler:
         5. Sends SESSION_COMPLETE when done
         """
         try:
-            # Wait for all audio to be ready
-            print("[HLS-Handler] Waiting for all audio to be ready...", flush=True)
+            # Heartbeat task — sends STATUS every 10s to keep the
+            # WebSocket alive through load-balancer idle timeouts.
+            async def _heartbeat():
+                while True:
+                    await asyncio.sleep(10.0)
+                    try:
+                        await self._send_json({
+                            "type": HLSMessageType.STATUS,
+                            "message": "Generating video...",
+                            **(self.session.get_status() if self.session else {}),
+                        })
+                        print("[HLS-Handler] Heartbeat sent", flush=True)
+                    except Exception:
+                        break
+
+            heartbeat_task = asyncio.create_task(_heartbeat())
+
             try:
-                await asyncio.wait_for(self.session.all_audio_ready.wait(), timeout=120.0)
-                print(f"[HLS-Handler] All audio ready "
-                      f"({self.session.audio_segments_buffered} segments, "
-                      f"{self.session.audio_duration_buffered:.2f}s)", flush=True)
-            except asyncio.TimeoutError:
-                print("[HLS-Handler] Timeout waiting for audio, starting anyway", flush=True)
-            
-            # Start HLS generation
-            result = await self.video_generator.start_generation()
+                # Wait for all audio to be ready (no GPU needed)
+                print("[HLS-Handler] Waiting for all audio to be ready...", flush=True)
+                try:
+                    await asyncio.wait_for(self.session.all_audio_ready.wait(), timeout=120.0)
+                    print(f"[HLS-Handler] All audio ready "
+                          f"({self.session.audio_segments_buffered} segments, "
+                          f"{self.session.audio_duration_buffered:.2f}s)", flush=True)
+                except asyncio.TimeoutError:
+                    print("[HLS-Handler] Timeout waiting for audio, starting anyway", flush=True)
+                
+                # --- Acquire GPU slot just before generation ---
+                gpu_mgr = GPUConcurrencyManager()
+                if gpu_mgr.is_at_capacity:
+                    await self._send_json({
+                        "type": HLSMessageType.STATUS,
+                        "queue_position": gpu_mgr.queue_position + 1,
+                        "message": "Waiting for GPU availability...",
+                    })
+                
+                acquired = await gpu_mgr.acquire()
+                if not acquired:
+                    await self._send_error(
+                        "Server is at capacity. Please try again shortly.",
+                        "SERVER_BUSY"
+                    )
+                    raise RuntimeError("GPU acquisition timed out")
+                self._gpu_acquired = True
+                print("[HLS-Handler] GPU slot acquired for generation", flush=True)
+                
+                try:
+                    # Start HLS generation (GPU-bound)
+                    result = await self.video_generator.start_generation()
+                    
+                    # Wait for ALL pipeline threads to finish
+                    await self.video_generator.wait_for_completion()
+                finally:
+                    # --- Release GPU slot immediately after generation ---
+                    if self._gpu_acquired:
+                        GPUConcurrencyManager().release()
+                        self._gpu_acquired = False
+                        print("[HLS-Handler] GPU slot released after generation", flush=True)
+            finally:
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
             
             # Build playlist URL
             playlist_url = self.video_generator.get_playlist_url(self.hls_base_url)
             
-            # Notify client that HLS stream is ready
-            await self._send_json({
-                "type": HLSMessageType.HLS_READY,
-                "session_id": self.session.session_id,
-                "playlist_url": playlist_url,
-            })
-            print(f"[HLS-Handler] Sent HLS_READY: {playlist_url}", flush=True)
-            
-            # Wait for generation to complete
-            await self.video_generator.wait_for_completion()
-            
-            # Notify about individual segments
+            # Count segments
             segment_count = 0
             if self.video_generator._sdk and self.video_generator._sdk._hls_writer:
                 segment_count = self.video_generator._sdk._hls_writer.get_segment_count()
             
             print(f"[HLS-Handler] HLS generation complete: {segment_count} segments", flush=True)
             
+            # NOW notify client — playlist is a complete VOD with all segments
+            hls_sent = await self._send_json({
+                "type": HLSMessageType.HLS_READY,
+                "session_id": self.session.session_id,
+                "playlist_url": playlist_url,
+                "segments": segment_count,
+            })
+            if hls_sent:
+                print(f"[HLS-Handler] Sent HLS_READY (VOD): {playlist_url}", flush=True)
+            else:
+                print(f"[HLS-Handler] HLS_READY FAILED to send (WebSocket dead). "
+                      f"Playlist still available at: {playlist_url}", flush=True)
+            
             # Send completion message
-            print("[HLS-Handler] Sending SESSION_COMPLETE...", flush=True)
             self.session.complete()
-            await self._send_json({
+            complete_sent = await self._send_json({
                 "type": HLSMessageType.SESSION_COMPLETE,
                 "total_duration_ms": self.session.total_duration_ms,
                 "chunks_processed": self.session.chunks_processed,
@@ -341,7 +399,10 @@ class HLSSocketHandler:
                 "hls_segments": segment_count,
                 "playlist_url": playlist_url,
             })
-            print("[HLS-Handler] SESSION_COMPLETE sent successfully", flush=True)
+            if complete_sent:
+                print("[HLS-Handler] SESSION_COMPLETE sent successfully", flush=True)
+            else:
+                print("[HLS-Handler] SESSION_COMPLETE failed to send (WebSocket dead)", flush=True)
             
         except asyncio.CancelledError:
             print("[HLS-Handler] HLS generation cancelled", flush=True)
@@ -354,12 +415,14 @@ class HLSSocketHandler:
             self.session.set_error(e)
             await self._send_error(str(e), "VIDEO_ERROR")
             
-    async def _send_json(self, data: dict):
-        """Send JSON message to client."""
+    async def _send_json(self, data: dict) -> bool:
+        """Send JSON message to client. Returns True if sent, False if failed."""
         try:
             await self.websocket.send_json(data)
+            return True
         except Exception as e:
-            print(f"[HLS-Handler] Failed to send JSON: {e}")
+            print(f"[HLS-Handler] Failed to send {data.get('type', '?')}: {e}")
+            return False
             
     async def _send_status(self):
         """Send status update to client."""
@@ -382,20 +445,36 @@ class HLSSocketHandler:
     async def _cleanup(self):
         """Cleanup resources when connection closes.
         
-        SDK resources (GPU, threads) are freed immediately.
-        HLS files are kept on disk and deleted after a delay so the
-        client can still fetch .m3u8 / .ts segments via HTTP.
+        In VOD mode, video generation writes to disk, so it's useful even
+        if the WebSocket dies. We let _video_task finish (with a timeout)
+        instead of cancelling it, so the playlist is always complete.
         """
         print("[HLS-Handler] Cleaning up")
         
-        # Cancel tasks
-        for task in [self._tts_task, self._audio_bridge_task, self._video_task]:
+        # Cancel TTS and audio bridge tasks (they depend on the WebSocket)
+        for task in [self._tts_task, self._audio_bridge_task]:
             if task and not task.done():
                 task.cancel()
                 try:
                     await task
                 except asyncio.CancelledError:
                     pass
+        
+        # Let _video_task finish — it writes to disk and the playlist
+        # is still useful for HTTP fetches even if the WS is dead.
+        if self._video_task and not self._video_task.done():
+            print("[HLS-Handler] Waiting for video generation to finish...", flush=True)
+            try:
+                await asyncio.wait_for(self._video_task, timeout=180.0)
+            except asyncio.TimeoutError:
+                print("[HLS-Handler] Video generation timed out, cancelling", flush=True)
+                self._video_task.cancel()
+                try:
+                    await self._video_task
+                except asyncio.CancelledError:
+                    pass
+            except asyncio.CancelledError:
+                pass
                     
         # Stop TTS streamer
         if self.tts_streamer:
@@ -405,12 +484,19 @@ class HLSSocketHandler:
         if self.video_generator:
             self.video_generator.cleanup_sdk()
             
-            # Schedule deferred file deletion (5 minutes)
+            # Schedule deferred file deletion (2 minutes)
             generator = self.video_generator
             async def _deferred_file_cleanup():
-                await asyncio.sleep(300)  # 5 minutes
+                await asyncio.sleep(120)  # 2 minutes
                 generator.cleanup_files()
             asyncio.create_task(_deferred_file_cleanup())
+        
+        # Release GPU slot (safety net — should already be released
+        # by _run_hls_generation, but guard against error paths)
+        if self._gpu_acquired:
+            GPUConcurrencyManager().release()
+            self._gpu_acquired = False
+            print("[HLS-Handler] GPU slot released in cleanup (was still held)", flush=True)
             
         # Remove session from manager
         if self.session:

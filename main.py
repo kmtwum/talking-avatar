@@ -80,7 +80,7 @@ def generate_tts(text: str, tts_preference: str = "coqui", tts_voice_id: str = N
         return audio_path
     else:
         from elevenlabs.client import ElevenLabs
-        api_key = os.getenv("ELEVENLABS_API_KEY")
+        api_key = get_secret_key('ELEVENLABS_API_KEY_FILE', os.getenv("ELEVENLABS_API_KEY"))
         voice_id = os.getenv("VOICE_ID")
         if tts_voice_id:
             print(f"Using voice ID from request: {tts_voice_id}")
@@ -154,13 +154,13 @@ async def generate_tts_async(
         )
 
 
-def get_secret_key(secret):
+def get_secret_key(secret, default: str = None):
     key_file = os.getenv(secret)
     if key_file:
         with open(key_file, 'r') as f:
             api_key = f.read().strip()
             return api_key
-    return None
+    return default
 
 
 @app.post("/generate")
@@ -179,6 +179,8 @@ async def quick_generate(
         watermark_position: str = Form("bottom-right")
 ):
     """Optimized endpoint for fast generation"""
+    from gpu_concurrency import GPUConcurrencyManager
+    gpu_mgr = GPUConcurrencyManager()
 
     img_path = f"/app/user_img/{avatar}.jpg"
     if not os.path.exists(img_path):
@@ -216,8 +218,18 @@ async def quick_generate(
         cmd.append("--watermark")
         cmd.extend(["--watermark_position", watermark_position])
 
-    process = await asyncio.create_subprocess_exec(*cmd)
-    await process.wait()
+    # Acquire GPU slot before running the subprocess
+    acquired = await gpu_mgr.acquire()
+    if not acquired:
+        return JSONResponse(
+            {"error": "Server is at capacity. Please try again shortly."},
+            status_code=503
+        )
+    try:
+        process = await asyncio.create_subprocess_exec(*cmd)
+        await process.wait()
+    finally:
+        gpu_mgr.release()
 
     # Clean up temp audio
     if os.path.exists(audio_path):
@@ -247,9 +259,26 @@ async def upload_photo(user_id: str = Form(...), image: UploadFile = File(...)):
     return {"message": "Photo uploaded successfully", "user_id": user_id}
 
 
+@app.delete("/presave-photo")
+async def delete_photo(user_id: str):
+    img_path = f"/app/user_img/{user_id}.jpg"
+    if os.path.exists(img_path):
+        os.remove(img_path)
+        return {"message": "Photo deleted successfully", "user_id": user_id}
+    else:
+        return {"message": "Photo not found", "user_id": user_id}
+
+
 @app.get("/health")
 def health():
     return {"status": "ready"}
+
+
+@app.get("/gpu/status")
+async def gpu_status():
+    """Return current GPU concurrency status for monitoring."""
+    from gpu_concurrency import GPUConcurrencyManager
+    return GPUConcurrencyManager().get_status()
 
 
 # Simple WebSocket test endpoint
@@ -467,6 +496,9 @@ async def generate_stream(
     
     async def stream_chunks():
         """Async generator yielding fMP4 segments."""
+        from gpu_concurrency import GPUConcurrencyManager
+        gpu_mgr = GPUConcurrencyManager()
+        gpu_acquired = False
         try:
             print(f"[ENDPOINT] Starting stream_chunks at {time.time() - start_time:.3f}s")
             
@@ -474,6 +506,12 @@ async def generate_stream(
             import os
             
             print(f"[ENDPOINT] Imported StreamingSDK at {time.time() - start_time:.3f}s")
+            
+            # Acquire GPU slot before creating SDK
+            acquired = await gpu_mgr.acquire()
+            if not acquired:
+                raise RuntimeError("Server is at capacity. Please try again shortly.")
+            gpu_acquired = True
             
             # Get SDK configuration
             cfg_pkl = "/app/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_online.pkl"
@@ -493,9 +531,30 @@ async def generate_stream(
             )
             
             print(f"[ENDPOINT] Starting chunk generation at {time.time() - start_time:.3f}s")
-            # Yield chunks as they're generated
+            # Yield chunks as they're generated, with pre-buffering
+            segment_count = 0
+            media_buffer = []
+            prebuffer_size = 3
+            is_buffering = True
+
             async for chunk in streaming_sdk.generate_chunks(audio_path):
-                yield chunk
+                segment_count += 1
+                if segment_count == 1:
+                    yield chunk
+                    continue
+                
+                if is_buffering:
+                    media_buffer.append(chunk)
+                    if len(media_buffer) >= prebuffer_size:
+                        is_buffering = False
+                        for buf_seg in media_buffer:
+                            yield buf_seg
+                        media_buffer.clear()
+                else:
+                    yield chunk
+
+            for buf_seg in media_buffer:
+                yield buf_seg
                 
         except Exception as e:
             print(f"[ENDPOINT] Error during streaming: {e}")
@@ -503,6 +562,9 @@ async def generate_stream(
             traceback.print_exc()
             raise
         finally:
+            # Release GPU slot
+            if gpu_acquired:
+                gpu_mgr.release()
             # Cleanup audio file
             try:
                 os.remove(audio_path)

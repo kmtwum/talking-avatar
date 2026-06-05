@@ -208,8 +208,20 @@ class TTSStreamer:
     and generating audio files for video synthesis.
     
     Supports optional chunk aggregation for more efficient TTS.
+
+    The direct (non-aggregated) path runs TTS calls in bounded parallel
+    (see ``MAX_CONCURRENT_TTS``) while preserving sequence order when
+    queueing audio to the video pipeline. The aggregated path remains
+    serial — it is only used by external clients that send raw tokens
+    (the notchup gateway disables avatar aggregation; see Bottleneck 3
+    in notchup-py/VIDEO_INFERENCE.md).
     """
-    
+
+    # Maximum number of concurrent TTS calls per session. Set conservatively
+    # to stay well under ElevenLabs paid-tier concurrency limits while still
+    # giving meaningful parallelism for typical 3-6 sentence responses.
+    MAX_CONCURRENT_TTS = 4
+
     def __init__(self, session: SocketSession):
         self.session = session
         self._running = False
@@ -263,25 +275,85 @@ class TTSStreamer:
             self.session.set_error(e)
             
     async def _process_direct(self):
-        """Process chunks directly without aggregation."""
-        while self._running:
+        """
+        Process chunks with bounded-parallel TTS, queueing audio in seq order.
+
+        Architecture:
+        - Main loop pulls chunks from ``session.text_queue`` and spawns a
+          TTS task per chunk (gated by ``MAX_CONCURRENT_TTS`` semaphore).
+        - The (seq, task) tuple is pushed onto an internal ordering queue.
+        - A dedicated drainer task dequeues in FIFO order, awaits each
+          task, and queues the resulting audio to ``session.audio_queue``.
+          This preserves seq order downstream while letting TTS calls run
+          concurrently.
+
+        For a 4-sentence response with ~1.5 s/call this turns ~6 s of
+        serial TTS into ~1.5-2 s of wall time (limited by the slowest call).
+        """
+        tts_sem = asyncio.Semaphore(self.MAX_CONCURRENT_TTS)
+        task_queue: asyncio.Queue = asyncio.Queue()
+
+        async def _run_tts(seq: int, text: str) -> str:
+            async with tts_sem:
+                print(f"[TTSStreamer {self.session.session_id}] Generating TTS for segment {seq}: "
+                      f"'{text[:50]}...' ({len(text)} chars)")
+                start = time.time()
+                audio_path = await self._generate_tts(text)
+                elapsed = time.time() - start
+                print(f"[TTSStreamer {self.session.session_id}] Segment {seq} TTS "
+                      f"complete in {elapsed:.2f}s: {audio_path}")
+                return audio_path
+
+        async def _drainer():
+            """Await TTS tasks in seq order, queue audio downstream."""
             try:
-                chunk = await asyncio.wait_for(
-                    self.session.text_queue.get(),
-                    timeout=1.0
-                )
-                
-                if chunk is None:
-                    await self.session.audio_queue.put(None)
-                    break
-                    
-                await self._generate_and_queue(chunk.seq, chunk.text)
-                
-            except asyncio.TimeoutError:
-                if self.session.state.value == "closing":
-                    await self.session.audio_queue.put(None)
-                    break
-                continue
+                while True:
+                    item = await task_queue.get()
+                    if item is None:
+                        break
+                    seq, task = item
+                    audio_path = await task
+                    await self.session.queue_audio(seq, audio_path)
+            finally:
+                # Always unblock downstream consumers, even on error —
+                # video pipeline waits on these signals.
+                await self.session.audio_queue.put(None)
+                self.session.all_audio_ready.set()
+
+        drainer_task = asyncio.create_task(_drainer())
+
+        try:
+            while self._running:
+                try:
+                    chunk = await asyncio.wait_for(
+                        self.session.text_queue.get(),
+                        timeout=1.0
+                    )
+
+                    if chunk is None:
+                        await task_queue.put(None)
+                        break
+
+                    task = asyncio.create_task(_run_tts(chunk.seq, chunk.text))
+                    await task_queue.put((chunk.seq, task))
+
+                except asyncio.TimeoutError:
+                    if self.session.state.value == "closing":
+                        await task_queue.put(None)
+                        break
+                    continue
+
+            # Wait for drainer to finish — re-raises any TTS error in
+            # seq order so _process_loop can mark the session failed.
+            await drainer_task
+        except Exception:
+            if not drainer_task.done():
+                drainer_task.cancel()
+                try:
+                    await drainer_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            raise
                 
     async def _process_with_aggregation(self):
         """Process chunks with aggregation for better TTS efficiency."""

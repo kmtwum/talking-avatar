@@ -137,11 +137,7 @@ class HLSStreamWriter:
             '-f', 'hls',
             '-hls_time', str(self.segment_duration),
             '-hls_list_size', '0',  # Keep all segments in playlist
-            # omit_endlist: critical for live-style streaming — without it,
-            # FFmpeg writes #EXT-X-ENDLIST after each segment update, causing
-            # Safari to treat 1-segment playlists as complete VODs.
-            # We manually append #EXT-X-ENDLIST in finalize() instead.
-            '-hls_flags', 'independent_segments+append_list+omit_endlist',
+            '-hls_flags', 'independent_segments',
             '-hls_segment_type', 'mpegts',
             '-hls_segment_filename', self.segment_pattern,
             self.playlist_path,
@@ -327,12 +323,8 @@ class HLSStreamWriter:
             
     def finalize(self):
         """
-        Finalize the stream - close FFmpeg stdin, wait for completion,
-        then manually append #EXT-X-ENDLIST to the playlist.
-        
-        We use omit_endlist in FFmpeg flags so the playlist looks like a
-        live stream during generation. Once FFmpeg exits, we append
-        #EXT-X-ENDLIST so players know the stream is complete.
+        Finalize the stream — close FFmpeg stdin, wait for it to exit,
+        then post-process the playlist into a clean VOD.
         """
         if self._finalized:
             return
@@ -360,21 +352,74 @@ class HLSStreamWriter:
                 print(f"[HLS] FFmpeg process timed out, killing")
                 self._process.kill()
         
-        # Manually append #EXT-X-ENDLIST to the playlist
-        # (omit_endlist flag prevents FFmpeg from writing it)
-        if os.path.exists(self.playlist_path):
-            try:
-                with open(self.playlist_path, 'a') as f:
-                    f.write('#EXT-X-ENDLIST\n')
-                print(f"[HLS] Appended #EXT-X-ENDLIST to playlist")
-            except Exception as e:
-                print(f"[HLS] Error appending ENDLIST: {e}")
+        # Post-process playlist into a clean VOD
+        self._postprocess_playlist()
         
         # Signal watcher that stream is complete
         self._stream_complete.set()
         
         if self._watcher_thread:
             self._watcher_thread.join(timeout=5)
+    
+    def _postprocess_playlist(self):
+        """
+        Rewrite the m3u8 playlist as a clean VOD:
+        - Remove #EXT-X-DISCONTINUITY lines
+        - Add #EXT-X-PLAYLIST-TYPE:VOD
+        - Ensure #EXT-X-ENDLIST is present at the end
+        """
+        if not os.path.exists(self.playlist_path):
+            print("[HLS] No playlist to post-process")
+            return
+        
+        try:
+            with open(self.playlist_path, 'r') as f:
+                lines = f.readlines()
+            
+            out = []
+            has_playlist_type = False
+            has_endlist = False
+            
+            for line in lines:
+                stripped = line.strip()
+                
+                # Skip discontinuity tags
+                if stripped == '#EXT-X-DISCONTINUITY':
+                    continue
+                
+                # Track existing tags
+                if stripped.startswith('#EXT-X-PLAYLIST-TYPE'):
+                    has_playlist_type = True
+                    out.append('#EXT-X-PLAYLIST-TYPE:VOD\n')
+                    continue
+                if stripped == '#EXT-X-ENDLIST':
+                    has_endlist = True
+                    # Don't append yet — we'll add it at the end
+                    continue
+                
+                out.append(line)
+            
+            # Insert PLAYLIST-TYPE:VOD after the EXTM3U header if not present
+            if not has_playlist_type:
+                insert_idx = 1  # after #EXTM3U
+                for i, line in enumerate(out):
+                    if line.strip().startswith('#EXT-X-VERSION') or \
+                       line.strip().startswith('#EXT-X-TARGETDURATION'):
+                        insert_idx = i
+                        break
+                out.insert(insert_idx, '#EXT-X-PLAYLIST-TYPE:VOD\n')
+            
+            # Ensure ENDLIST at end
+            out.append('#EXT-X-ENDLIST\n')
+            
+            with open(self.playlist_path, 'w') as f:
+                f.writelines(out)
+            
+            seg_count = sum(1 for l in out if l.strip().endswith('.ts'))
+            print(f"[HLS] Post-processed playlist as VOD ({seg_count} segments)")
+            
+        except Exception as e:
+            print(f"[HLS] Error post-processing playlist: {e}")
     
     def close(self):
         """Close the writer, finalize, and cleanup."""

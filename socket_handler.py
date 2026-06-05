@@ -13,6 +13,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from socket_session import SocketSession, SessionConfig, SessionManager, SessionState
 from tts_streamer import TTSStreamer
 from stream_pipeline_socket import SocketVideoGenerator, AudioSegment
+from gpu_concurrency import GPUConcurrencyManager
 
 
 class MessageType:
@@ -45,6 +46,9 @@ class SocketHandler:
         self.session: Optional[SocketSession] = None
         self.tts_streamer: Optional[TTSStreamer] = None
         self.video_generator: Optional[SocketVideoGenerator] = None
+        
+        # GPU concurrency
+        self._gpu_acquired = False
         
         # Pipeline tasks
         self._tts_task: Optional[asyncio.Task] = None
@@ -122,7 +126,25 @@ class SocketHandler:
         """Start the TTS and video generation pipeline."""
         if not self.session:
             raise RuntimeError("No session started")
-            
+        
+        # --- Acquire GPU slot (blocks if at capacity) ---
+        gpu_mgr = GPUConcurrencyManager()
+        if gpu_mgr.is_at_capacity:
+            await self._send_json({
+                "type": MessageType.STATUS,
+                "queue_position": gpu_mgr.queue_position + 1,
+                "message": "Waiting for GPU availability...",
+            })
+        
+        acquired = await gpu_mgr.acquire()
+        if not acquired:
+            await self._send_error(
+                "Server is at capacity. Please try again shortly.",
+                "SERVER_BUSY"
+            )
+            raise RuntimeError("GPU acquisition timed out")
+        self._gpu_acquired = True
+        
         # Initialize TTS streamer
         self.tts_streamer = TTSStreamer(self.session)
         await self.tts_streamer.start()
@@ -281,36 +303,64 @@ class SocketHandler:
     async def _stream_video_output(self):
         """
         Stream video segments to the client as they're generated.
-        
-        Waits for audio pre-buffer before starting video generation
-        to ensure smooth playback.
-        
+
+        Gates on ``first_audio_ready`` rather than ``all_audio_ready`` so
+        the GPU pipeline can begin processing audio chunks while TTS for
+        later sentences is still running. ``SocketStreamingSDK.generate_progressive``
+        defers FFmpeg startup internally until audio is final, so this
+        early start is safe for audio muxing.
+
         Sends binary fMP4 segments via WebSocket.
         """
         try:
-            # Wait for ALL audio to be ready before starting video
-            # This ensures FFmpeg has complete audio and won't cut off early
-            print("[SocketHandler] Waiting for all audio to be ready...", flush=True)
+            # Wait for the FIRST audio segment to be ready, then hand off
+            # to generate_progressive (which spawns the GPU thread and
+            # internally waits for _audio_complete before starting FFmpeg).
+            print("[SocketHandler] Waiting for first audio segment...", flush=True)
             try:
-                await asyncio.wait_for(self.session.all_audio_ready.wait(), timeout=120.0)
-                print(f"[SocketHandler] All audio ready, starting video stream "
-                      f"({self.session.audio_segments_buffered} segments, "
+                await asyncio.wait_for(self.session.first_audio_ready.wait(), timeout=120.0)
+                print(f"[SocketHandler] First audio ready, starting video pipeline "
+                      f"({self.session.audio_segments_buffered} segments so far, "
                       f"{self.session.audio_duration_buffered:.2f}s)", flush=True)
             except asyncio.TimeoutError:
-                print("[SocketHandler] Timeout waiting for audio, starting anyway", flush=True)
+                print("[SocketHandler] Timeout waiting for first audio, starting anyway", flush=True)
             
             # Stream video segments
             segment_count = 0
+            media_buffer = []
+            prebuffer_size = 3  # Wait for 3 media chunks before sending to client
+            is_buffering = True
+
             async for segment in self.video_generator.generate():
-                # Send binary segment
-                await self.websocket.send_bytes(segment)
                 segment_count += 1
                 
                 if segment_count == 1:
+                    # Send init segment immediately
+                    await self.websocket.send_bytes(segment)
                     print(f"[SocketHandler] Sent init segment ({len(segment)} bytes)", flush=True)
-                elif segment_count % 10 == 0:
-                    print(f"[SocketHandler] Sent {segment_count} segments", flush=True)
+                    continue
+
+                if is_buffering:
+                    media_buffer.append(segment)
+                    print(f"[SocketHandler] Pre-buffering segment {segment_count-1}/{prebuffer_size}", flush=True)
                     
+                    if len(media_buffer) >= prebuffer_size:
+                        is_buffering = False
+                        print(f"[SocketHandler] Pre-buffer full, sending {len(media_buffer)} segments...", flush=True)
+                        for buf_seg in media_buffer:
+                            await self.websocket.send_bytes(buf_seg)
+                        media_buffer.clear()
+                else:
+                    # Send binary segment immediately
+                    await self.websocket.send_bytes(segment)
+                    
+                if segment_count % 10 == 0:
+                    print(f"[SocketHandler] Processed {segment_count} segments", flush=True)
+                    
+            # Send any remaining segments if generation finished before pre-buffer filled
+            for buf_seg in media_buffer:
+                await self.websocket.send_bytes(buf_seg)
+                
             print(f"[SocketHandler] Video streaming complete: {segment_count} segments", flush=True)
             
             # Send completion message
@@ -381,6 +431,11 @@ class SocketHandler:
         # Cleanup video generator
         if self.video_generator:
             self.video_generator.cleanup()
+            
+        # Release GPU slot
+        if self._gpu_acquired:
+            GPUConcurrencyManager().release()
+            self._gpu_acquired = False
             
         # Remove session from manager
         if self.session:
