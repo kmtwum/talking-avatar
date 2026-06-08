@@ -358,9 +358,12 @@ async def websocket_generate_hls(websocket: WebSocket):
     
     Message Types (Server -> Client):
         SESSION_STARTED: {"type": "SESSION_STARTED", "session_id": "abc123", "protocol": "hls"}
-        HLS_READY: {"type": "HLS_READY", "session_id": "abc123", "playlist_url": "/hls/abc123/stream.m3u8"}
+        HLS_READY: {"type": "HLS_READY", "session_id": "abc123", "playlist_url": "/hls/abc123/stream.m3u8", "mode": "live"|"vod"}
+        HLS_SEGMENT: {"type": "HLS_SEGMENT", "session_id": "abc123", "segment": "segment_00001.ts", "seq": 1, "url": "/hls/abc123/segment_00001.ts"}
         STATUS: {"type": "STATUS", "chunks_processed": 3, ...}
         SESSION_COMPLETE: {"type": "SESSION_COMPLETE", ..., "playlist_url": "..."}
+
+    Set ``live_mode: true`` in SESSION_START for progressive segment delivery (Teams).
         ERROR: {"type": "ERROR", "message": "...", "code": "..."}
     """
     print(f"[HLS-WS] Connection attempt from: {websocket.client}")
