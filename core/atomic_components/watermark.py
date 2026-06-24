@@ -35,7 +35,7 @@ class WatermarkOverlay:
         self,
         logo_path: str = DEFAULT_WATERMARK_PATH,
         position: str = "bottom-right",
-        scale: float = 0.3,
+        scale: float = 0.1,
         opacity: float = 0.6,
         margin: int = 20,
     ):
