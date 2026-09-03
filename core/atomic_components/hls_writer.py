@@ -39,6 +39,7 @@ class HLSStreamWriter:
         audio_path: Optional[str] = None,
         output_dir: Optional[str] = None,
         session_id: Optional[str] = None,
+        live_mode: bool = False,
     ):
         """
         Initialize the HLS writer.
@@ -58,6 +59,7 @@ class HLSStreamWriter:
         self.segment_duration = segment_duration
         self.audio_path = audio_path
         self.session_id = session_id or f"hls_{int(time.time() * 1000)}"
+        self.live_mode = live_mode
         
         # Output directory for HLS files
         if output_dir:
@@ -133,11 +135,16 @@ class HLSStreamWriter:
             cmd.extend(['-c:a', 'aac', '-b:a', '128k', '-ar', '44100'])
         
         # HLS muxer settings
+        hls_flags = (
+            "append_list+omit_endlist+independent_segments"
+            if self.live_mode
+            else "independent_segments"
+        )
         cmd.extend([
             '-f', 'hls',
             '-hls_time', str(self.segment_duration),
             '-hls_list_size', '0',  # Keep all segments in playlist
-            '-hls_flags', 'independent_segments',
+            '-hls_flags', hls_flags,
             '-hls_segment_type', 'mpegts',
             '-hls_segment_filename', self.segment_pattern,
             self.playlist_path,
@@ -290,6 +297,14 @@ class HLSStreamWriter:
     def get_segment_count(self) -> int:
         """Get the number of segments produced so far."""
         return len(self._known_segments)
+
+    def list_segments_since(self, seen: set) -> list[str]:
+        """Return sorted segment filenames not yet in *seen*."""
+        return sorted(n for n in self._known_segments if n not in seen)
+
+    @property
+    def stream_complete(self) -> bool:
+        return self._stream_complete.is_set()
     
     def get_segment_path(self, segment_name: str) -> str:
         """Get the full path to a segment file."""
@@ -352,8 +367,9 @@ class HLSStreamWriter:
                 print(f"[HLS] FFmpeg process timed out, killing")
                 self._process.kill()
         
-        # Post-process playlist into a clean VOD
-        self._postprocess_playlist()
+        # Post-process playlist into a clean VOD (skip mid-stream rewrite in live mode)
+        if not self.live_mode:
+            self._postprocess_playlist()
         
         # Signal watcher that stream is complete
         self._stream_complete.set()

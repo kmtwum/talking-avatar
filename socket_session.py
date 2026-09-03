@@ -49,10 +49,16 @@ class SessionConfig:
     # Watermark settings
     watermark: bool = False  # Enable watermark overlay on generated video
     watermark_position: str = "bottom-right"  # bottom-right, bottom-left, top-right, top-left
+
+    # HLS live / low-latency mode (Teams, realtime consumers)
+    live_mode: bool = False  # Emit HLS_READY + HLS_SEGMENT progressively
+    hls_segment_duration: float = 2.0  # Seconds per .ts segment (1.0 recommended for live_mode)
     
     @classmethod
     def from_dict(cls, data: dict) -> "SessionConfig":
         """Create config from dictionary."""
+        live_mode = bool(data.get("live_mode", False))
+        default_seg = 1.0 if live_mode else 2.0
         return cls(
             avatar=data.get("avatar", "sunny"),
             size=int(data.get("size", 256)),
@@ -72,6 +78,8 @@ class SessionConfig:
             prebuffer_timeout=float(data.get("prebuffer_timeout", 10.0)),
             watermark=data.get("watermark", False),
             watermark_position=data.get("watermark_position", "bottom-right"),
+            live_mode=live_mode,
+            hls_segment_duration=float(data.get("hls_segment_duration", default_seg)),
         )
 
 
