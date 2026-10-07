@@ -293,12 +293,13 @@ class TTSStreamer:
         tts_sem = asyncio.Semaphore(self.MAX_CONCURRENT_TTS)
         task_queue: asyncio.Queue = asyncio.Queue()
 
-        async def _run_tts(seq: int, text: str) -> str:
+        async def _run_tts(seq: int, text: str, previous_text: Optional[str]) -> str:
             async with tts_sem:
                 print(f"[TTSStreamer {self.session.session_id}] Generating TTS for segment {seq}: "
-                      f"'{text[:50]}...' ({len(text)} chars)")
+                      f"'{text[:50]}...' ({len(text)} chars"
+                      f"{', +prev_text' if previous_text else ''})")
                 start = time.time()
-                audio_path = await self._generate_tts(text)
+                audio_path = await self._generate_tts(text, previous_text=previous_text)
                 elapsed = time.time() - start
                 print(f"[TTSStreamer {self.session.session_id}] Segment {seq} TTS "
                       f"complete in {elapsed:.2f}s: {audio_path}")
@@ -322,6 +323,12 @@ class TTSStreamer:
 
         drainer_task = asyncio.create_task(_drainer())
 
+        # Carries forward the previous chunk's text as ElevenLabs prosody
+        # context so TTS calls flow naturally into one another across
+        # chunk boundaries. Chunks arrive on text_queue in seq order so
+        # this is naturally the "chronologically previous" chunk.
+        prev_text: Optional[str] = None
+
         try:
             while self._running:
                 try:
@@ -334,8 +341,11 @@ class TTSStreamer:
                         await task_queue.put(None)
                         break
 
-                    task = asyncio.create_task(_run_tts(chunk.seq, chunk.text))
+                    task = asyncio.create_task(
+                        _run_tts(chunk.seq, chunk.text, previous_text=prev_text)
+                    )
                     await task_queue.put((chunk.seq, task))
+                    prev_text = chunk.text
 
                 except asyncio.TimeoutError:
                     if self.session.state.value == "closing":
@@ -358,7 +368,10 @@ class TTSStreamer:
     async def _process_with_aggregation(self):
         """Process chunks with aggregation for better TTS efficiency."""
         aggregation_seq = 0  # Sequence number for aggregated chunks
-        
+        # Previous aggregated chunk's text, passed to ElevenLabs as prosody
+        # context for cross-chunk continuity (same mechanism as _process_direct).
+        prev_text: Optional[str] = None
+
         while self._running:
             try:
                 # Use shorter timeout to check for aggregation timeout
@@ -373,9 +386,10 @@ class TTSStreamer:
                     if remaining:
                         print(f"[TTSStreamer {self.session.session_id}] Flushing remaining buffer: "
                               f"'{remaining.text[:50]}...' ({len(remaining.text)} chars)")
-                        await self._generate_and_queue(aggregation_seq, remaining.text)
+                        await self._generate_and_queue(aggregation_seq, remaining.text, previous_text=prev_text)
                         aggregation_seq += 1
-                    
+                        prev_text = remaining.text
+
                     await self.session.audio_queue.put(None)
                     
                     # Signal that all audio is ready for video generation
@@ -393,16 +407,18 @@ class TTSStreamer:
                 if aggregated:
                     print(f"[TTSStreamer {self.session.session_id}] Aggregated {len(aggregated.source_seqs)} chunks: "
                           f"'{aggregated.text[:50]}...' ({len(aggregated.text)} chars)")
-                    await self._generate_and_queue(aggregation_seq, aggregated.text)
+                    await self._generate_and_queue(aggregation_seq, aggregated.text, previous_text=prev_text)
                     aggregation_seq += 1
-                    
+                    prev_text = aggregated.text
+
             except asyncio.TimeoutError:
                 # Check if session is ending
                 if self.session.state.value == "closing":
                     remaining = self._aggregator.flush_remaining()
                     if remaining:
-                        await self._generate_and_queue(aggregation_seq, remaining.text)
+                        await self._generate_and_queue(aggregation_seq, remaining.text, previous_text=prev_text)
                         aggregation_seq += 1
+                        prev_text = remaining.text
                     await self.session.audio_queue.put(None)
                     break
                     
@@ -411,19 +427,20 @@ class TTSStreamer:
                 if timed_out:
                     print(f"[TTSStreamer {self.session.session_id}] Timeout flush: "
                           f"'{timed_out.text[:50]}...' ({len(timed_out.text)} chars)")
-                    await self._generate_and_queue(aggregation_seq, timed_out.text)
+                    await self._generate_and_queue(aggregation_seq, timed_out.text, previous_text=prev_text)
                     aggregation_seq += 1
-                    
+                    prev_text = timed_out.text
+
                 continue
                 
-    async def _generate_and_queue(self, seq: int, text: str):
+    async def _generate_and_queue(self, seq: int, text: str, previous_text: Optional[str] = None):
         """Generate TTS for text and queue the audio."""
         print(f"[TTSStreamer {self.session.session_id}] Generating TTS for segment {seq}: "
               f"'{text[:50]}...' ({len(text)} chars)")
         
         try:
             start_time = time.time()
-            audio_path = await self._generate_tts(text)
+            audio_path = await self._generate_tts(text, previous_text=previous_text)
             elapsed = time.time() - start_time
             
             await self.session.queue_audio(seq, audio_path)
@@ -434,11 +451,15 @@ class TTSStreamer:
             print(f"[TTSStreamer {self.session.session_id}] TTS error for segment {seq}: {e}")
             raise
             
-    async def _generate_tts(self, text: str) -> str:
+    async def _generate_tts(self, text: str, previous_text: Optional[str] = None) -> str:
         """
         Generate TTS audio for text.
         
         Uses async HTTP to avoid blocking the event loop.
+
+        ``previous_text`` is the text of the previous chunk in the response,
+        used by ElevenLabs for cross-chunk prosody continuity. Ignored for
+        Coqui (no equivalent parameter).
         """
         config = self.session.config
 
@@ -446,7 +467,7 @@ class TTSStreamer:
         if config.tts_preference == "coqui":
             return await self._generate_coqui(text)
         else:
-            return await self._generate_elevenlabs(text)
+            return await self._generate_elevenlabs(text, previous_text=previous_text)
             
     async def _generate_coqui(self, text: str) -> str:
         """Generate TTS using Coqui TTS server."""
@@ -472,13 +493,29 @@ class TTSStreamer:
                 
             return audio_path
             
-    async def _generate_elevenlabs(self, text: str) -> str:
+    async def _generate_elevenlabs(self, text: str, previous_text: Optional[str] = None) -> str:
         """Generate TTS using ElevenLabs API."""
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._elevenlabs_sync, text)
+        return await loop.run_in_executor(
+            None, self._elevenlabs_sync, text, previous_text
+        )
         
-    def _elevenlabs_sync(self, text: str) -> str:
-        """Synchronous ElevenLabs generation (runs in thread pool)."""
+    def _elevenlabs_sync(self, text: str, previous_text: Optional[str] = None) -> str:
+        """
+        Synchronous ElevenLabs generation (runs in thread pool).
+
+        When ``previous_text`` is supplied, ElevenLabs uses it as prosody
+        context so sentence boundaries flow naturally into one another
+        (eliminates the "stitched-together" intonation jumps that showed
+        up once mid-response pauses were removed by the silence trim).
+
+        We deliberately do *not* use ``previous_request_ids``: it gives
+        stronger continuity but requires the previous call's request_id,
+        which is only known after that call completes — serialising the
+        chain and defeating our bounded-parallel TTS win (Bottleneck 5).
+        ``previous_text`` is known at task-spawn time, so parallelism is
+        preserved.
+        """
         import tempfile
         from elevenlabs.client import ElevenLabs
         
@@ -486,13 +523,21 @@ class TTSStreamer:
         voice_id = self.session.config.tts_voice_id or os.getenv("VOICE_ID")
         
         elevenlabs = ElevenLabs(api_key=api_key)
-        response = elevenlabs.text_to_speech.convert(
-            voice_id=voice_id,
-            output_format="mp3_22050_32",
-            text=text,
-            model_id="eleven_turbo_v2_5",
-        )
-        
+
+        # Build kwargs so we only pass ``previous_text`` when actually
+        # available — defensive against SDK versions where the keyword
+        # may not be accepted.
+        convert_kwargs = {
+            "voice_id": voice_id,
+            "output_format": "mp3_22050_32",
+            "text": text,
+            "model_id": "eleven_turbo_v2_5",
+        }
+        if previous_text:
+            convert_kwargs["previous_text"] = previous_text
+
+        response = elevenlabs.text_to_speech.convert(**convert_kwargs)
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
             for chunk in response:
                 if chunk:
