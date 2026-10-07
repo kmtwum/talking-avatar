@@ -55,6 +55,8 @@ class HLSStreamingSDK(StreamingSDK):
         
         # HLS writer (replaces _fmp4_writer)
         self._hls_writer: Optional[HLSStreamWriter] = None
+        self._hls_segment_duration: float = 2.0
+        self._hls_live_mode: bool = False
         
         # Synchronization
         self._audio_complete = threading.Event()
@@ -67,6 +69,8 @@ class HLSStreamingSDK(StreamingSDK):
         height: int = 256,
         hls_output_dir: str = None,
         session_id: str = None,
+        hls_segment_duration: float = 2.0,
+        live_mode: bool = False,
         **kwargs
     ):
         """
@@ -86,6 +90,8 @@ class HLSStreamingSDK(StreamingSDK):
         # Store HLS-specific settings
         self._hls_output_dir = hls_output_dir
         self._hls_session_id = session_id
+        self._hls_segment_duration = hls_segment_duration
+        self._hls_live_mode = live_mode
         
         # Use parent streaming setup
         self.setup_streaming(source_path, width, height, **kwargs)
@@ -100,10 +106,11 @@ class HLSStreamingSDK(StreamingSDK):
             width=self._streaming_output_width,
             height=self._streaming_output_height,
             fps=25,
-            segment_duration=2.0,
+            segment_duration=self._hls_segment_duration,
             audio_path=audio_path,
             output_dir=self._hls_output_dir,
             session_id=self._hls_session_id,
+            live_mode=self._hls_live_mode,
         )
         
         print("[HLS-SDK] Starting HLSStreamWriter")
@@ -441,12 +448,16 @@ class HLSVideoGenerator:
         watermark_position: str = "bottom-right",
         hls_base_dir: str = "/tmp/hls_streams",
         session_id: str = None,
+        live_mode: bool = False,
+        hls_segment_duration: float = 2.0,
     ):
         self.source_path = source_path
         self.width = width
         self.height = height
         self.watermark = watermark
         self.watermark_position = watermark_position
+        self.live_mode = live_mode
+        self.hls_segment_duration = hls_segment_duration
         import time as _time
         self.session_id = session_id or f"hls_{int(_time.time() * 1000)}"
         
@@ -471,6 +482,8 @@ class HLSVideoGenerator:
             height=self.height,
             hls_output_dir=self.hls_output_dir,
             session_id=self.session_id,
+            hls_segment_duration=self.hls_segment_duration,
+            live_mode=self.live_mode,
             watermark=self.watermark,
             watermark_position=self.watermark_position,
         )
@@ -507,7 +520,7 @@ class HLSVideoGenerator:
     
     def get_playlist_url(self, base_url: str = "") -> str:
         """Get the URL for the HLS playlist."""
-        return f"{base_url}/video/hls/{self.session_id}/stream.m3u8"
+        return f"{base_url}/hls/{self.session_id}/stream.m3u8"
     
     def cleanup_sdk(self):
         """
