@@ -170,6 +170,11 @@ class HLSStreamingSDK(StreamingSDK):
             
             # Write to HLS writer
             self._hls_writer.write_frame(res_frame_rgb)
+            self.writer_pbar.update()
+        
+        # Closing flushes the final count; without it the bar's last
+        # printed line stays at whatever the previous refresh showed.
+        self.writer_pbar.close()
         
         # All frames written - finalize HLS stream
         if self._hls_writer:
