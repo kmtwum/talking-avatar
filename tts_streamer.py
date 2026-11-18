@@ -315,6 +315,7 @@ class TTSStreamer:
                     seq, task = item
                     audio_path = await task
                     await self.session.queue_audio(seq, audio_path)
+                    self.session.mark_chunk_processed(seq)
             finally:
                 # Always unblock downstream consumers, even on error —
                 # video pipeline waits on these signals.
@@ -386,7 +387,10 @@ class TTSStreamer:
                     if remaining:
                         print(f"[TTSStreamer {self.session.session_id}] Flushing remaining buffer: "
                               f"'{remaining.text[:50]}...' ({len(remaining.text)} chars)")
-                        await self._generate_and_queue(aggregation_seq, remaining.text, previous_text=prev_text)
+                        await self._generate_and_queue(
+                            aggregation_seq, remaining.text,
+                            previous_text=prev_text, source_seqs=remaining.source_seqs,
+                        )
                         aggregation_seq += 1
                         prev_text = remaining.text
 
@@ -407,7 +411,10 @@ class TTSStreamer:
                 if aggregated:
                     print(f"[TTSStreamer {self.session.session_id}] Aggregated {len(aggregated.source_seqs)} chunks: "
                           f"'{aggregated.text[:50]}...' ({len(aggregated.text)} chars)")
-                    await self._generate_and_queue(aggregation_seq, aggregated.text, previous_text=prev_text)
+                    await self._generate_and_queue(
+                        aggregation_seq, aggregated.text,
+                        previous_text=prev_text, source_seqs=aggregated.source_seqs,
+                    )
                     aggregation_seq += 1
                     prev_text = aggregated.text
 
@@ -416,7 +423,10 @@ class TTSStreamer:
                 if self.session.state.value == "closing":
                     remaining = self._aggregator.flush_remaining()
                     if remaining:
-                        await self._generate_and_queue(aggregation_seq, remaining.text, previous_text=prev_text)
+                        await self._generate_and_queue(
+                            aggregation_seq, remaining.text,
+                            previous_text=prev_text, source_seqs=remaining.source_seqs,
+                        )
                         aggregation_seq += 1
                         prev_text = remaining.text
                     await self.session.audio_queue.put(None)
@@ -427,14 +437,29 @@ class TTSStreamer:
                 if timed_out:
                     print(f"[TTSStreamer {self.session.session_id}] Timeout flush: "
                           f"'{timed_out.text[:50]}...' ({len(timed_out.text)} chars)")
-                    await self._generate_and_queue(aggregation_seq, timed_out.text, previous_text=prev_text)
+                    await self._generate_and_queue(
+                        aggregation_seq, timed_out.text,
+                        previous_text=prev_text, source_seqs=timed_out.source_seqs,
+                    )
                     aggregation_seq += 1
                     prev_text = timed_out.text
 
                 continue
                 
-    async def _generate_and_queue(self, seq: int, text: str, previous_text: Optional[str] = None):
-        """Generate TTS for text and queue the audio."""
+    async def _generate_and_queue(
+        self,
+        seq: int,
+        text: str,
+        previous_text: Optional[str] = None,
+        source_seqs: Optional[List[int]] = None,
+    ):
+        """
+        Generate TTS for text and queue the audio.
+
+        ``seq`` numbers the aggregated segment; ``source_seqs`` are the
+        client chunk seqs folded into it, marked processed once the audio
+        is queued.
+        """
         print(f"[TTSStreamer {self.session.session_id}] Generating TTS for segment {seq}: "
               f"'{text[:50]}...' ({len(text)} chars)")
         
@@ -444,6 +469,8 @@ class TTSStreamer:
             elapsed = time.time() - start_time
             
             await self.session.queue_audio(seq, audio_path)
+            for source_seq in source_seqs or ():
+                self.session.mark_chunk_processed(source_seq)
             
             print(f"[TTSStreamer {self.session.session_id}] Segment {seq} TTS complete in {elapsed:.2f}s: {audio_path}")
             

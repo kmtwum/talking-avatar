@@ -298,6 +298,11 @@ class HLSStreamWriter:
         """Get the number of segments produced so far."""
         return len(self._known_segments)
 
+    @property
+    def frames_written(self) -> int:
+        """Number of video frames handed to FFmpeg so far."""
+        return self._frames_written
+
     def list_segments_since(self, seen: set) -> list[str]:
         """Return sorted segment filenames not yet in *seen*."""
         return sorted(n for n in self._known_segments if n not in seen)

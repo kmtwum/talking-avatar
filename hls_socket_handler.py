@@ -21,6 +21,10 @@ from tts_streamer import TTSStreamer
 from stream_pipeline_hls import HLSVideoGenerator, AudioSegment
 from gpu_concurrency import GPUConcurrencyManager
 
+# How long HLS files stay on disk after the WebSocket closes, so the client
+# can still fetch the playlist and segments over HTTP.
+HLS_FILE_RETENTION_SECONDS = 120
+
 
 class HLSMessageType:
     """WebSocket message types for HLS protocol."""
@@ -407,6 +411,7 @@ class HLSSocketHandler:
         while True:
             await asyncio.sleep(10.0)
             try:
+                self._sync_frame_count()
                 await self._send_json({
                     "type": HLSMessageType.STATUS,
                     "message": "Generating video...",
@@ -543,7 +548,14 @@ class HLSSocketHandler:
         writer = self._hls_writer()
         return writer.get_segment_count() if writer else 0
 
+    def _sync_frame_count(self):
+        """Copy the writer's frame count onto the session for status reporting."""
+        writer = self._hls_writer()
+        if writer and self.session:
+            self.session.frames_generated = writer.frames_written
+
     async def _send_session_complete(self, playlist_url: str, segment_count: int):
+        self._sync_frame_count()
         self.session.complete()
         complete_sent = await self._send_json({
             "type": HLSMessageType.SESSION_COMPLETE,
@@ -579,6 +591,7 @@ class HLSSocketHandler:
         if not self.session:
             return
             
+        self._sync_frame_count()
         await self._send_json({
             "type": HLSMessageType.STATUS,
             **self.session.get_status()
@@ -634,10 +647,10 @@ class HLSSocketHandler:
         if self.video_generator:
             self.video_generator.cleanup_sdk()
             
-            # Schedule deferred file deletion (2 minutes)
+            # Schedule deferred file deletion
             generator = self.video_generator
             async def _deferred_file_cleanup():
-                await asyncio.sleep(120)  # 2 minutes
+                await asyncio.sleep(HLS_FILE_RETENTION_SECONDS)
                 generator.cleanup_files()
             asyncio.create_task(_deferred_file_cleanup())
         
@@ -652,4 +665,5 @@ class HLSSocketHandler:
         if self.session:
             SessionManager().remove_session(self.session.session_id)
             
-        print("[HLS-Handler] Cleanup complete (HLS files will be removed in 5 minutes)")
+        print(f"[HLS-Handler] Cleanup complete (HLS files will be removed in "
+              f"{HLS_FILE_RETENTION_SECONDS}s)")

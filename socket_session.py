@@ -299,7 +299,10 @@ class SocketSession:
         await self.video_queue.put(segment)
         
     def mark_chunk_processed(self, seq: int):
-        """Mark a chunk as fully processed."""
+        """
+        Mark a text chunk as processed: its TTS audio has been generated
+        and queued for the video pipeline.
+        """
         if seq in self.chunks:
             self.chunks[seq].processed = True
             self.chunks_processed += 1

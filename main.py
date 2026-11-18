@@ -371,10 +371,13 @@ async def websocket_generate_hls(websocket: WebSocket):
     
     from hls_socket_handler import HLSSocketHandler
     
-    # Determine base URL for HLS from request headers
+    # Determine base URL for HLS from request headers. The app is mounted
+    # under a root path ("/video") behind the proxy, so the playlist and
+    # segment URLs must carry it or they miss the proxied location and 404.
     host = websocket.headers.get("host", "localhost:8000")
     scheme = "https" if websocket.headers.get("x-forwarded-proto") == "https" else "http"
-    hls_base_url = f"{scheme}://{host}"
+    root_path = (websocket.scope.get("root_path") or "").rstrip("/")
+    hls_base_url = f"{scheme}://{host}{root_path}"
     
     handler = HLSSocketHandler(websocket, hls_base_url=hls_base_url)
     await handler.handle_connection()
