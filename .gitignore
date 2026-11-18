@@ -34,5 +34,7 @@ log/*
 *.pyc
 *.jpeg
 
+prepare_data
+
 !example/audio.wav
 !example/image.png

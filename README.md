@@ -33,6 +33,7 @@ Ant Group
 
 
 ## 📌 Updates
+* [2025.11.12] 🔥🔥 We noticed the community's enthusiasm for open-source training code. [Training code](https://github.com/antgroup/ditto-talkinghead/tree/train) is now available, since there have been multiple versions and limited time to organize, it may differ slightly from the paper version.
 * [2025.07.11] 🔥 The [PyTorch model](#-pytorch-model) is now available.
 * [2025.07.07] 🔥 Ditto is accepted by ACM MM 2025.
 * [2025.01.21] 🔥 We update the [Colab](https://colab.research.google.com/drive/19SUi1TiO32IS-Crmsu9wrkNspWE8tFbs?usp=sharing) demo, welcome to try it. 
@@ -40,6 +41,12 @@ Ant Group
 * [2024.11.29] 🔥 Our [paper](https://arxiv.org/abs/2411.19509) is in public on arxiv.
 
  
+ ## 🔍 Overview
+<!-- This is the **train branch**, containing code for **training the model**. For inference code, please switch to the [`main`](https://github.com/antgroup/ditto-talkinghead) branch. -->
+
+This is the **inference branch**. For training code, please switch to the [`train`](https://github.com/antgroup/ditto-talkinghead/tree/train) branch.
+
+
 
 ## 🛠️ Installation
 
